@@ -582,13 +582,20 @@ function taskEl(t,opts){
       })(s);
     }
     if(subAddId===t.id){
+      let subSaved=false; // guards double-add between submit and blur
       const qInp=h('input',{type:'text',placeholder:'Add a subtask…',enterkeyhint:'done',class:'sub-quick',
         'aria-label':'New subtask',
-        onkeydown:function(e){if(e.key==='Escape'){subAddId=null;render()}},
-        onblur:function(){setTimeout(function(){if(subAddId===t.id&&document.activeElement!==qInp){subAddId=null;render()}},150)}});
+        onkeydown:function(e){if(e.key==='Escape'){subSaved=true;subAddId=null;render()}},
+        onblur:function(){setTimeout(function(){
+          if(subSaved||subAddId!==t.id||document.activeElement===qInp)return;
+          const v=qInp.value.trim();
+          if(v){subSaved=true;t.subtasks.push({id:uid(),title:v,done:false});save()}
+          subAddId=null;render();
+        },150)}});
       const qForm=h('form',{onsubmit:function(e){
         e.preventDefault();
         if(!qInp.value.trim())return;
+        subSaved=true;
         t.subtasks.push({id:uid(),title:qInp.value.trim(),done:false});
         save();render();
         const again=document.querySelector('.sub-quick');if(again)again.focus();
@@ -606,14 +613,21 @@ function addRow(key){
   const row=h('div',{class:'add-row'});
   const dateFor=key==null?null:winDates()[key];
   if(addingKey===key){
+    let saved=false; // guards double-add between submit and blur
     const inp=h('input',{class:'add-input',type:'text',placeholder:'Add a task…',
       'aria-label':'New task',enterkeyhint:'done',
-      onkeydown:function(e){if(e.key==='Escape'){addingKey='none';render()}},
-      onblur:function(){setTimeout(function(){if(addingKey===key&&document.activeElement!==inp){addingKey='none';render()}},150)}
+      onkeydown:function(e){if(e.key==='Escape'){saved=true;addingKey='none';render()}},
+      onblur:function(){setTimeout(function(){
+        if(saved||addingKey!==key||document.activeElement===inp)return;
+        const v=inp.value.trim();
+        if(v){saved=true;addTask(dateFor,v)} // keyboard dismissed with text typed — keep it
+        addingKey='none';render();
+      },150)}
     });
     const form=h('form',{onsubmit:function(e){
       e.preventDefault();
       if(!inp.value.trim())return;
+      saved=true;
       addTask(dateFor,inp.value);render();
       const again=document.querySelector('#'+(key==null?'sec-day-any':'sec-day-'+key)+' .add-input');
       if(again)again.focus();
