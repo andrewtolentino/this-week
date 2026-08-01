@@ -139,6 +139,12 @@
   .subs{padding:0 0 8px 34px}
   .sub-row{display:flex;align-items:center;gap:10px;padding:4px 0;font-size:14.5px}
   .sub-row.done span{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--faint)}
+  .subs .sub-row form{flex:1;min-width:0}
+  .subs .sub-row input{width:100%;background:none;border:none;padding:2px 0;font:inherit;font-size:16px;color:var(--ink)}
+  .subs .sub-row input::placeholder{color:var(--faint)}
+  .sub-add-btn{flex:none;align-self:flex-start;background:none;border:none;color:var(--faint);
+    font-size:19px;line-height:1;padding:8px 2px 4px 10px;cursor:pointer}
+  .sub-add-btn:hover{color:var(--muted)}
 
   /* ---------- add row ---------- */
   .add-row{padding:9px 0 10px}
@@ -202,6 +208,8 @@
     padding:10px;margin-bottom:14px;line-height:1.5}
   .modal textarea.short{height:90px;margin-bottom:8px}
   .summary{font-size:14.5px;line-height:1.65;color:var(--ink);white-space:pre-wrap;margin-bottom:16px}
+  .meta-row{display:flex;align-items:center;gap:14px;margin:-6px 0 14px}
+  .meta-row .stamp{font-family:var(--mono);font-size:11px;color:var(--faint)}
   .pulse{color:var(--muted);animation:pulse 1.3s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
   .set-sec{margin-bottom:18px}
@@ -252,6 +260,7 @@ const VIEWS=[['days','Days'],['time','Time of day'],['tag','Tags'],['flat','One 
 /* ---------- state ---------- */
 let S=load();
 let openId=null;        // task id with editor open
+let subAddId=null;      // task id with quick subtask input open
 let addingKey='none';   // window index 0-6, null (anytime), or 'none'
 let pendingRollover=null;
 let confirmArm=null;
@@ -308,16 +317,27 @@ function seedRecurring(){
 }
 function ensureDay(){
   const t0=iso(today0());
-  const movable=S.tasks.filter(t=>t.date&&t.date<t0&&!t.done&&!t.recurringId);
-  if(movable.length){pendingRollover={count:movable.length};return}
+  const past=S.tasks.filter(t=>t.date&&t.date<t0);
+  const movable=past.filter(t=>!t.done&&!t.recurringId);
+  if(movable.length){
+    pendingRollover={count:movable.length,done:past.filter(t=>t.done).length,total:past.length};
+    return;
+  }
   S.tasks=S.tasks.filter(t=>!(t.date&&t.date<t0));
   seedRecurring();save();
+  if(past.length&&past.every(t=>t.done)){
+    toast('Clean slate — you finished all '+past.length+' from yesterday');
+  }
 }
 function resolveRollover(move){
   const t0=iso(today0());
+  const n=pendingRollover?pendingRollover.count:0;
   if(move)for(const t of S.tasks){if(t.date&&t.date<t0&&!t.done&&!t.recurringId){t.date=t0;t.carried=(t.carried||0)+1}}
   S.tasks=S.tasks.filter(t=>!(t.date&&t.date<t0));
   seedRecurring();pendingRollover=null;save();render();
+  toast(move
+    ?('Moved '+n+' task'+(n===1?'':'s')+' to today')
+    :('Let '+n+' task'+(n===1?'':'s')+' go — fresh start'));
 }
 
 /* ---------- task ops ---------- */
@@ -542,14 +562,16 @@ function taskEl(t,opts){
   wrap.append(h('div',{class:'task-row'},
     h('button',{class:'check'+(t.done?' on':''),'aria-label':t.done?'Mark not done':'Mark done',
       onclick:function(){t.done=!t.done;save();render()}},'✓'),
-    h('div',{class:'task-main',onclick:function(){openId=openId===t.id?null:t.id;addingKey='none';render()}},
+    h('div',{class:'task-main',onclick:function(){openId=openId===t.id?null:t.id;subAddId=null;addingKey='none';render()}},
       h('div',{class:'task-title'},t.title),
       meta.length?h('div',{class:'meta'},meta):null
-    )
+    ),
+    h('button',{class:'sub-add-btn','aria-label':'Add a subtask',title:'Add a subtask',
+      onclick:function(){subAddId=subAddId===t.id?null:t.id;openId=null;addingKey='none';render()}},'+')
   ));
 
   if(openId===t.id){wrap.append(editorEl(t))}
-  else if(t.subtasks.length){
+  else if(t.subtasks.length||subAddId===t.id){
     const subs=h('div',{class:'subs'});
     for(const s of t.subtasks){
       (function(s){
@@ -558,6 +580,21 @@ function taskEl(t,opts){
             onclick:function(){s.done=!s.done;save();render()}},'✓'),
           h('span',null,s.title)));
       })(s);
+    }
+    if(subAddId===t.id){
+      const qInp=h('input',{type:'text',placeholder:'Add a subtask…',enterkeyhint:'done',class:'sub-quick',
+        'aria-label':'New subtask',
+        onkeydown:function(e){if(e.key==='Escape'){subAddId=null;render()}},
+        onblur:function(){setTimeout(function(){if(subAddId===t.id&&document.activeElement!==qInp){subAddId=null;render()}},150)}});
+      const qForm=h('form',{onsubmit:function(e){
+        e.preventDefault();
+        if(!qInp.value.trim())return;
+        t.subtasks.push({id:uid(),title:qInp.value.trim(),done:false});
+        save();render();
+        const again=document.querySelector('.sub-quick');if(again)again.focus();
+      }},qInp);
+      subs.append(h('div',{class:'sub-row'},h('span',{class:'check sm',style:'border-color:transparent'}),qForm));
+      setTimeout(function(){qInp.focus()},0);
     }
     wrap.append(subs);
   }
@@ -694,9 +731,9 @@ function buildCheckin(){
   const w=winDates(),t0=today0();
   const done=S.tasks.filter(t=>t.done).length;
   const lines=[];
-  lines.push("You're my kind, encouraging accountability coach. I have mild ADHD — keep your reply short (under 150 words), warm, and concrete.");
+  lines.push("You're my motivational coach. I have mild ADHD. Reply in plain text, under 70 words total, no preamble, no headers. Format: one short line celebrating what's done (or a warm nudge if nothing is yet); one line naming a pattern only if there's a real one (especially tasks carried over repeatedly); then 'Focus next:' with 1–3 short lines starting with •. Direct, warm, specific.");
   lines.push('');
-  lines.push('Here is my week from my to-do app ('+fmtRange()+') — '+done+' of '+S.tasks.length+' done:');
+  lines.push('My week ('+fmtRange()+') — '+done+' of '+S.tasks.length+' done:');
   const fmt=function(t){
     const bits=[];
     if(t.timeOfDay)bits.push(t.timeOfDay);
@@ -718,8 +755,6 @@ function buildCheckin(){
     lines.push('');lines.push('Anytime this week:');
     any.forEach(t=>lines.push('- '+fmt(t)));
   }
-  lines.push('');
-  lines.push('Please: celebrate what I finished, gently note any patterns (especially anything I keep carrying over), and give me the top 1–3 things to focus on next. Encouraging, never preachy.');
   return lines.join('\n');
 }
 function toast(msg){
@@ -789,34 +824,53 @@ function callClaude(promptText){
   });
 }
 
-function showSummaryModal(){
+const CHECKKEY='this-week-checkin';
+function getCachedCheckin(){
+  try{
+    const raw=localStorage.getItem(CHECKKEY);if(!raw)return null;
+    const c=JSON.parse(raw);
+    return (c&&c.text&&c.date===iso(today0()))?c:null;
+  }catch(e){return null}
+}
+
+function openCheckinModal(){
   const root=document.getElementById('modalRoot');root.textContent='';
-  const body=h('div',{class:'summary pulse'},'Reading your week…');
+  const body=h('div',{class:'summary'});
+  const metaRow=h('div',{class:'meta-row'});
   root.append(h('div',{class:'overlay',onclick:function(e){if(e.target===e.currentTarget)root.textContent=''}},
     h('div',{class:'modal',role:'dialog','aria-modal':'true'},
       h('h2',null,'✦ Your check-in'),
-      body,
+      body,metaRow,
       h('button',{class:'ghost',onclick:function(){root.textContent=''}},'Close'))));
-  return body;
+  return {body:body,metaRow:metaRow};
 }
 
-function checkin(){
-  if(!S.tasks.length){toast('Nothing to summarize yet — add a task or two first');return}
+function showCheckinResult(ui,c){
+  ui.body.classList.remove('pulse');
+  ui.body.textContent=c.text;
+  ui.metaRow.textContent='';
+  ui.metaRow.append(
+    h('span',{class:'stamp'},'Today · '+c.at),
+    h('button',{class:'tbtn',onclick:function(){generateCheckin(ui)}},'Regenerate')
+  );
+}
+
+function generateCheckin(ui){
+  ui.metaRow.textContent='';
+  ui.body.classList.add('pulse');
+  ui.body.textContent='Reading your week…';
   const text=buildCheckin();
-  if(!getApiKey()){
-    toast('Tip: add your Claude API key in Settings for instant summaries');
-    shareFallback(text);
-    return;
-  }
-  const body=showSummaryModal();
   callClaude(text).then(function(summary){
-    body.classList.remove('pulse');
-    body.textContent=summary||'(empty response)';
+    const c={date:iso(today0()),
+      at:new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}),
+      text:summary||'(empty response)'};
+    try{localStorage.setItem(CHECKKEY,JSON.stringify(c))}catch(e){}
+    showCheckinResult(ui,c);
   }).catch(function(e){
-    body.classList.remove('pulse');
-    body.textContent='';
+    ui.body.classList.remove('pulse');
+    ui.body.textContent='';
     const cspLike=(e instanceof TypeError);
-    body.append(
+    ui.body.append(
       h('p',{style:'margin:0 0 12px;color:var(--muted);font-size:14px'},
         cspLike
           ?'Couldn’t reach the Claude API from this copy of the app. The claude.ai version blocks network calls — open the hosted version, or copy your check-in instead.'
@@ -827,6 +881,19 @@ function checkin(){
       }},'Copy it for Claude instead')
     );
   });
+}
+
+function checkin(){
+  if(!S.tasks.length){toast('Nothing to summarize yet — add a task or two first');return}
+  if(!getApiKey()){
+    toast('Tip: add your Claude API key in Settings for instant summaries');
+    shareFallback(buildCheckin());
+    return;
+  }
+  const ui=openCheckinModal();
+  const cached=getCachedCheckin();
+  if(cached)showCheckinResult(ui,cached);
+  else generateCheckin(ui);
 }
 
 /* ---------- settings ---------- */
@@ -890,10 +957,12 @@ function showSettings(){
 /* ---------- catch-up modal ---------- */
 function renderModal(){
   const root=document.getElementById('modalRoot');root.textContent='';
-  const n=pendingRollover.count;
+  const n=pendingRollover.count,d=pendingRollover.done,total=pendingRollover.total;
   root.append(h('div',{class:'overlay'},h('div',{class:'modal',role:'dialog','aria-modal':'true'},
     h('h2',null,'A new day'),
-    h('p',null,(n===1?'1 task from before today isn’t done yet.':n+' tasks from before today aren’t done yet.')+' Repeating tasks take care of themselves.'),
+    h('p',null,'You finished '+d+' of '+total+' from last time. '
+      +(n===1?'1 task is still open.':n+' tasks are still open.')
+      +' Repeating tasks take care of themselves.'),
     h('button',{class:'btn',onclick:function(){resolveRollover(true)}},
       n===1?'Move it to today':'Move them to today'),
     h('button',{class:'ghost',onclick:function(){resolveRollover(false)}},'Let '+(n===1?'it':'them')+' go')
@@ -910,6 +979,13 @@ function renderModal(){
     m.setAttribute('content',m.getAttribute('content')+', maximum-scale=1');
 })();
 document.getElementById('aiBtn').addEventListener('click',checkin);
+document.addEventListener('pointerdown',function(e){
+  const a=document.activeElement;
+  if(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA')
+    &&!(e.target.closest&&e.target.closest('input,textarea,select,form,.editor'))){
+    a.blur();
+  }
+},true);
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&openId){openId=null;render()}});
 document.addEventListener('visibilitychange',function(){
   if(!document.hidden){ensureDay();render()}
