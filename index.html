@@ -822,7 +822,7 @@ function shareFallback(text){
 /* ---------- Claude API ---------- */
 const KEYKEY='this-week-api-key';
 function getApiKey(){try{return localStorage.getItem(KEYKEY)||''}catch(e){return''}}
-function callClaude(promptText){
+function callClaude(promptText,maxTokens){
   return fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
     headers:{
@@ -833,7 +833,7 @@ function callClaude(promptText){
     },
     body:JSON.stringify({
       model:'claude-opus-5',
-      max_tokens:2048,
+      max_tokens:maxTokens||2048,
       output_config:{effort:'low'},
       messages:[{role:'user',content:promptText}]
     })
@@ -843,7 +843,9 @@ function callClaude(promptText){
         const msg=data&&data.error&&data.error.message?data.error.message:('HTTP '+res.status);
         throw new Error(msg);
       }
+      if(!data||!data.content)throw new Error('empty reply from the API');
       if(data.stop_reason==='refusal')throw new Error('The model declined this request.');
+      if(data.stop_reason==='max_tokens')throw new Error('the reply ran out of room');
       return data.content.filter(function(b){return b.type==='text'})
         .map(function(b){return b.text}).join('\n').trim();
     });
@@ -1061,16 +1063,22 @@ function todFromTime(t){const hh=+t.slice(0,2);return hh<12?'morning':(hh<17?'af
 function fmtClock(t){let hh=+t.slice(0,2);const mm=t.slice(3,5);const ap=hh>=12?'PM':'AM';hh=hh%12||12;
   return hh+(mm!=='00'?':'+mm:'')+' '+ap}
 
+function cleanText(s){
+  return String(s==null?'':s)
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]/g,' ')
+    .replace(/\s+/g,' ').trim().slice(0,200);
+}
 function classifyEvents(evs){
   const list=evs.map(function(e,i){
-    return JSON.stringify({i:i,title:e.title,date:e.date,time:e.time,allDay:e.allDay,calendar:e.calendar});
+    return JSON.stringify({i:i,title:cleanText(e.title),date:e.date,time:e.time,
+      allDay:!!e.allDay,calendar:cleanText(e.calendar)});
   }).join('\n');
   const prompt='These are upcoming events from my calendar. For each one, decide whether it needs me to actively do or attend something (meetings, calls, classes, appointments, errands, deadlines, things to prepare) — or whether it is only informational (birthdays, holidays, other people’s time off, anniversaries, observances, FYI markers).\n\nReply with ONLY a JSON array, nothing else. One object per event: {"i":<index>,"task":true|false,"title":"<short cleaned-up task title, no date in it>"}\n\n'+list;
-  return callClaude(prompt)
-    .catch(function(){return callClaude(prompt)}) // one retry for transient network blips
+  return callClaude(prompt,8192)
+    .catch(function(){return callClaude(prompt,8192)}) // one retry for transient network blips
     .then(function(text){
       const m=text.match(/\[[\s\S]*\]/);
-      if(!m)throw new Error('unexpected AI reply');
+      if(!m)throw new Error('AI reply wasn’t JSON: “'+text.slice(0,80)+'…”');
       const arr=JSON.parse(m[0]);
       if(!Array.isArray(arr))throw new Error('unexpected AI reply shape');
       return arr;
@@ -1133,7 +1141,8 @@ function syncCalendar(manual){
     });
   }).catch(function(e){
     calSyncing=false;
-    const detail=(e&&e.name?e.name+': ':'')+((e&&e.message)?e.message:String(e));
+    let detail=(e&&e.name?e.name+': ':'')+((e&&e.message)?e.message:String(e));
+    if(e&&e.stack)detail+=' @ '+String(e.stack).replace(/\s+/g,' ').slice(0,220);
     noteError('Failed while '+stage+' — '+detail);
     if(manual)toast('Sync failed while '+stage+' (details in Settings)');
   });
