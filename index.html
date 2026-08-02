@@ -220,6 +220,9 @@
     padding:8px 10px;margin-bottom:8px}
   .set-note{font-size:12.5px;color:var(--muted);line-height:1.5;margin:6px 0 0}
   .btn.sm{width:auto;padding:7px 14px;font-size:13.5px;margin-bottom:0}
+  .acct-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .acct-row .em{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-family:var(--mono);font-size:12px;color:var(--ink)}
   .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:30;
     background:var(--ink);color:var(--bg);font-size:13.5px;padding:10px 18px;border-radius:11px;
     box-shadow:var(--shadow-lg);max-width:88%;text-align:center;opacity:0;transition:opacity .25s ease}
@@ -504,8 +507,11 @@ function renderDays(grouped){
     app.append(daySection(i,winLabel(i,d),fmtDayDate(d),S.tasks.filter(t=>t.date===w[i]),grouped,i===0));
   }
   if(!(any.length||addingKey===null)){
-    app.append(h('div',{class:'add-row lone'},h('button',{class:'add-btn',onclick:function(){addingKey=null;render();}},
-      h('span',{class:'plus'},'+'),'Add something for whenever')));
+    app.append(h('div',{class:'add-row lone'},h('button',{class:'add-btn',onclick:function(){
+      addingKey=null;render();
+      const el=document.querySelector('#sec-day-any .add-input');
+      if(el)el.focus();
+    }},h('span',{class:'plus'},'+'),'Add something for whenever')));
   }
 }
 
@@ -567,7 +573,11 @@ function taskEl(t,opts){
       meta.length?h('div',{class:'meta'},meta):null
     ),
     h('button',{class:'sub-add-btn','aria-label':'Add a subtask',title:'Add a subtask',
-      onclick:function(){subAddId=subAddId===t.id?null:t.id;openId=null;addingKey='none';render()}},'+')
+      onclick:function(){
+        subAddId=subAddId===t.id?null:t.id;openId=null;addingKey='none';render();
+        const el=document.querySelector('.sub-quick');
+        if(el)el.focus(); // synchronous within the tap so iOS opens the keyboard
+      }},'+')
   ));
 
   if(openId===t.id){wrap.append(editorEl(t))}
@@ -601,7 +611,6 @@ function taskEl(t,opts){
         const again=document.querySelector('.sub-quick');if(again)again.focus();
       }},qInp);
       subs.append(h('div',{class:'sub-row'},h('span',{class:'check sm',style:'border-color:transparent'}),qForm));
-      setTimeout(function(){qInp.focus()},0);
     }
     wrap.append(subs);
   }
@@ -633,10 +642,13 @@ function addRow(key){
       if(again)again.focus();
     }},inp);
     row.append(form,h('div',{class:'add-hint'},'Enter to add · #word becomes a tag'));
-    setTimeout(function(){inp.focus()},0);
   }else{
-    row.append(h('button',{class:'add-btn',onclick:function(){addingKey=key;openId=null;render()}},
-      h('span',{class:'plus'},'+'),'Add'));
+    row.append(h('button',{class:'add-btn',onclick:function(){
+      addingKey=key;openId=null;subAddId=null;render();
+      // focus synchronously within the tap gesture so iOS opens the keyboard
+      const el=document.querySelector('#'+(key==null?'sec-day-any':'sec-day-'+key)+' .add-input');
+      if(el)el.focus();
+    }},h('span',{class:'plus'},'+'),'Add'));
   }
   return row;
 }
@@ -910,6 +922,208 @@ function checkin(){
   else generateCheckin(ui);
 }
 
+/* ---------- Google Calendar ---------- */
+const GCALKEY='this-week-gcal';
+function gcal(){
+  try{return JSON.parse(localStorage.getItem(GCALKEY))||{clientId:'',accounts:[],lastSync:0}}
+  catch(e){return{clientId:'',accounts:[],lastSync:0}}
+}
+function saveGcal(g){try{localStorage.setItem(GCALKEY,JSON.stringify(g))}catch(e){}}
+
+let gsiLoading=null;
+function loadGsi(){
+  if(window.google&&window.google.accounts)return Promise.resolve();
+  if(gsiLoading)return gsiLoading;
+  gsiLoading=new Promise(function(res,rej){
+    const s=document.createElement('script');
+    s.src='https://accounts.google.com/gsi/client';
+    s.onload=res;
+    s.onerror=function(){gsiLoading=null;rej(new Error('couldn’t load Google sign-in — this only works on the hosted app'))};
+    document.head.appendChild(s);
+  });
+  return gsiLoading;
+}
+
+const GSCOPE='https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email';
+function requestToken(opts){
+  return loadGsi().then(function(){
+    return new Promise(function(res,rej){
+      const tc=window.google.accounts.oauth2.initTokenClient({
+        client_id:gcal().clientId,
+        scope:GSCOPE,
+        callback:function(resp){
+          if(resp&&resp.access_token)res(resp);
+          else rej(new Error((resp&&resp.error)||'no token returned'));
+        },
+        error_callback:function(e){rej(new Error((e&&e.type)||'sign-in failed'))}
+      });
+      tc.requestAccessToken(opts.silent?{prompt:'',login_hint:opts.hint||''}:{prompt:'select_account'});
+    });
+  });
+}
+function freshToken(acc){
+  if(acc.token&&Date.now()<acc.expiry)return Promise.resolve(acc.token);
+  return requestToken({silent:true,hint:acc.email}).then(function(resp){
+    acc.token=resp.access_token;
+    acc.expiry=Date.now()+(((resp.expires_in||3600)-60)*1000);
+    const g=gcal();
+    const i=g.accounts.findIndex(function(a){return a.email===acc.email});
+    if(i>=0){g.accounts[i]=acc;saveGcal(g)}
+    return acc.token;
+  });
+}
+function connectGoogleAccount(){
+  const g=gcal();
+  if(!g.clientId){toast('Paste your Google Client ID first');return}
+  requestToken({silent:false}).then(function(resp){
+    return fetch('https://www.googleapis.com/oauth2/v3/userinfo',
+      {headers:{Authorization:'Bearer '+resp.access_token}})
+      .then(function(r){return r.json()})
+      .then(function(u){
+        const g2=gcal();
+        const acc={email:u.email||'(unknown)',token:resp.access_token,
+          expiry:Date.now()+(((resp.expires_in||3600)-60)*1000)};
+        const i=g2.accounts.findIndex(function(a){return a.email===acc.email});
+        if(i>=0)g2.accounts[i]=acc;else g2.accounts.push(acc);
+        saveGcal(g2);
+        toast('Connected '+acc.email);
+        showSettings();
+        syncCalendar(true);
+      });
+  }).catch(function(e){toast('Google sign-in didn’t finish: '+e.message)});
+}
+function disconnectGoogleAccount(email){
+  const g=gcal();
+  const acc=g.accounts.find(function(a){return a.email===email});
+  if(acc&&acc.token&&window.google&&window.google.accounts){
+    try{window.google.accounts.oauth2.revoke(acc.token,function(){})}catch(e){}
+  }
+  g.accounts=g.accounts.filter(function(a){return a.email!==email});
+  saveGcal(g);
+  toast('Disconnected '+email);
+  showSettings();
+}
+
+function gFetch(url,token){
+  return fetch(url,{headers:{Authorization:'Bearer '+token}}).then(function(r){
+    if(!r.ok)throw new Error('Google API error '+r.status);
+    return r.json();
+  });
+}
+function collectEvents(){
+  const g=gcal();
+  const t0=today0();
+  const timeMin=t0.toISOString();
+  const timeMax=addDays(t0,7).toISOString();
+  const all=[];const errors=[];
+  let chain=Promise.resolve();
+  g.accounts.forEach(function(acc){
+    chain=chain.then(function(){
+      return freshToken(acc).then(function(tok){
+        return gFetch('https://www.googleapis.com/calendar/v3/users/me/calendarList',tok)
+          .then(function(cl){
+            const cals=(cl.items||[]).filter(function(c){return c.selected!==false});
+            let sub=Promise.resolve();
+            cals.forEach(function(cal){
+              sub=sub.then(function(){
+                const url='https://www.googleapis.com/calendar/v3/calendars/'
+                  +encodeURIComponent(cal.id)
+                  +'/events?singleEvents=true&orderBy=startTime&maxResults=100'
+                  +'&timeMin='+encodeURIComponent(timeMin)
+                  +'&timeMax='+encodeURIComponent(timeMax);
+                return gFetch(url,tok).then(function(ev){
+                  (ev.items||[]).forEach(function(e){
+                    if(e.status==='cancelled')return;
+                    const me=(e.attendees||[]).find(function(a){return a.self});
+                    if(me&&me.responseStatus==='declined')return;
+                    all.push({
+                      key:acc.email+'|'+cal.id+'|'+e.id,
+                      title:e.summary||'(untitled)',
+                      date:(e.start&&e.start.dateTime)?e.start.dateTime.slice(0,10):(e.start?e.start.date:null),
+                      time:(e.start&&e.start.dateTime)?e.start.dateTime.slice(11,16):null,
+                      allDay:!(e.start&&e.start.dateTime),
+                      calendar:cal.summaryOverride||cal.summary||'',
+                      eventType:e.eventType||'default'
+                    });
+                  });
+                }).catch(function(err){errors.push(cal.summary+': '+err.message)});
+              });
+            });
+            return sub;
+          });
+      }).catch(function(err){errors.push(acc.email+': '+err.message)});
+    });
+  });
+  return chain.then(function(){return {events:all,errors:errors}});
+}
+
+function todFromTime(t){const hh=+t.slice(0,2);return hh<12?'morning':(hh<17?'afternoon':'evening')}
+function fmtClock(t){let hh=+t.slice(0,2);const mm=t.slice(3,5);const ap=hh>=12?'PM':'AM';hh=hh%12||12;
+  return hh+(mm!=='00'?':'+mm:'')+' '+ap}
+
+function classifyEvents(evs){
+  const list=evs.map(function(e,i){
+    return JSON.stringify({i:i,title:e.title,date:e.date,time:e.time,allDay:e.allDay,calendar:e.calendar});
+  }).join('\n');
+  const prompt='These are upcoming events from my calendar. For each one, decide whether it needs me to actively do or attend something (meetings, calls, classes, appointments, errands, deadlines, things to prepare) — or whether it is only informational (birthdays, holidays, other people’s time off, anniversaries, observances, FYI markers).\n\nReply with ONLY a JSON array, nothing else. One object per event: {"i":<index>,"task":true|false,"title":"<short cleaned-up task title, no date in it>"}\n\n'+list;
+  return callClaude(prompt).then(function(text){
+    const m=text.match(/\[[\s\S]*\]/);
+    if(!m)throw new Error('unexpected AI reply');
+    return JSON.parse(m[0]);
+  });
+}
+
+let calSyncing=false;
+function syncCalendar(manual){
+  if(calSyncing)return;
+  const g=gcal();
+  if(!g.clientId||!g.accounts.length){if(manual)toast('Connect a Google account in Settings first');return}
+  if(!getApiKey()){if(manual)toast('Add your Claude API key first — it decides what’s a task');return}
+  calSyncing=true;
+  if(manual)toast('Syncing your calendars…');
+  collectEvents().then(function(res){
+    if(!S.calSeen)S.calSeen={};
+    const t0=iso(today0());
+    for(const k in S.calSeen){if(S.calSeen[k].d&&S.calSeen[k].d<t0)delete S.calSeen[k]}
+    const win=winDates();
+    const fresh=res.events.filter(function(e){
+      if(!e.date||win.indexOf(e.date)<0)return false;
+      if(S.calSeen[e.key])return false;
+      if(e.eventType==='birthday'||e.eventType==='workingLocation'||e.eventType==='outOfOffice'){
+        S.calSeen[e.key]={d:e.date};return false;
+      }
+      return true;
+    });
+    if(!fresh.length){
+      calSyncing=false;g.lastSync=Date.now();saveGcal(g);save();
+      if(manual)toast(res.errors.length?('Sync issue: '+res.errors[0]):'Calendar is in sync — nothing new');
+      return;
+    }
+    return classifyEvents(fresh).then(function(verdicts){
+      let added=0;
+      verdicts.forEach(function(v){
+        const e=fresh[v.i];
+        if(!e||S.calSeen[e.key])return;
+        S.calSeen[e.key]={d:e.date};
+        if(v.task){
+          const title=(v.title||e.title)+(e.time?' ('+fmtClock(e.time)+')':'');
+          S.tasks.push({id:uid(),title:title,date:e.date,tags:['calendar'],subtasks:[],done:false,
+            timeOfDay:e.time?todFromTime(e.time):null,createdAt:Date.now(),recurringId:null,eventKey:e.key});
+          added++;
+        }
+      });
+      calSyncing=false;
+      g.lastSync=Date.now();saveGcal(g);
+      save();render();
+      if(added>0)toast('Added '+added+' task'+(added===1?'':'s')+' from your calendar');
+      else if(manual)toast('Checked your calendars — nothing that needs doing');
+    });
+  }).catch(function(e){
+    calSyncing=false;
+    if(manual)toast('Calendar sync failed: '+e.message);
+  });
+}
+
 /* ---------- settings ---------- */
 function showSettings(){
   const root=document.getElementById('modalRoot');root.textContent='';
@@ -934,6 +1148,39 @@ function showSettings(){
       }},'Remove key'):null
     ),
     h('p',{class:'set-note'},'Stored only in this browser, sent only to Anthropic. Powers the ✦ check-in.'));
+
+  const g=gcal();
+  const cidInp=h('input',{type:'text',autocomplete:'off',spellcheck:'false',
+    placeholder:g.clientId?'Client ID saved':'….apps.googleusercontent.com',
+    'aria-label':'Google OAuth Client ID',
+    onchange:function(){
+      const v=cidInp.value.trim();
+      if(!v)return;
+      const g2=gcal();g2.clientId=v;saveGcal(g2);
+      cidInp.value='';cidInp.placeholder='Client ID saved';
+      toast('Client ID saved');
+    }});
+  const calSec=h('div',{class:'set-sec'},
+    h('label',null,'Google Calendar'),
+    cidInp,
+    g.accounts.map(function(a){
+      return h('div',{class:'acct-row'},
+        h('span',{class:'em'},a.email),
+        h('button',{class:'xbtn','aria-label':'Disconnect '+a.email,
+          onclick:function(){disconnectGoogleAccount(a.email)}},'×'));
+    }),
+    h('div',{style:'display:flex;gap:10px;align-items:center;flex-wrap:wrap'},
+      h('button',{class:'btn sm',onclick:connectGoogleAccount},
+        g.accounts.length?'Connect another account':'Connect an account'),
+      g.accounts.length?h('button',{class:'tbtn',onclick:function(){
+        document.getElementById('modalRoot').textContent='';
+        syncCalendar(true);
+      }},'Sync now'):null
+    ),
+    h('p',{class:'set-note'},
+      g.lastSync
+        ?('Last synced '+new Date(g.lastSync).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'. Claude decides which events need doing; birthdays and FYIs are skipped.')
+        :'Events from the next 7 days become tasks when Claude judges they need doing — birthdays and FYIs are skipped. Works on the hosted app.'));
 
   const exTa=h('textarea',{class:'short',readonly:true,'aria-label':'Exported tasks'});
   const exSec=h('div',{class:'set-sec'},
@@ -964,7 +1211,7 @@ function showSettings(){
   root.append(h('div',{class:'overlay',onclick:function(e){if(e.target===e.currentTarget)root.textContent=''}},
     h('div',{class:'modal',role:'dialog','aria-modal':'true'},
       h('h2',null,'Settings'),
-      keySec,exSec,imSec,
+      keySec,calSec,exSec,imSec,
       h('button',{class:'ghost',onclick:function(){root.textContent=''}},'Close'))));
 }
 
@@ -1006,5 +1253,13 @@ document.addEventListener('visibilitychange',function(){
 });
 ensureDay();
 render();
+/* quiet calendar sync at most every 6 hours; silent token refresh may fail
+   without a user gesture — that's fine, manual Sync now still works */
+(function(){
+  const g=gcal();
+  if(g.clientId&&g.accounts.length&&getApiKey()&&Date.now()-g.lastSync>6*3600*1000){
+    setTimeout(function(){syncCalendar(false)},800);
+  }
+})();
 })();
 </script>
