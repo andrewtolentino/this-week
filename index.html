@@ -976,7 +976,10 @@ function requestToken(opts){
         },
         error_callback:function(e){rej(new Error((e&&e.type)||'sign-in failed'))}
       });
-      tc.requestAccessToken(opts.silent?{prompt:'',login_hint:opts.hint||''}:{prompt:'select_account'});
+      tc.requestAccessToken(
+        opts.silent?{prompt:'',login_hint:opts.hint||''}
+        :opts.reconnect?{login_hint:opts.hint||''}
+        :{prompt:'select_account'});
     });
   });
 }
@@ -985,11 +988,32 @@ function freshToken(acc){
   return requestToken({silent:true,hint:acc.email}).then(function(resp){
     acc.token=resp.access_token;
     acc.expiry=Date.now()+(((resp.expires_in||3600)-60)*1000);
+    acc.needsReauth=false;
     const g=gcal();
     const i=g.accounts.findIndex(function(a){return a.email===acc.email});
     if(i>=0){g.accounts[i]=acc;saveGcal(g)}
     return acc.token;
+  }).catch(function(){
+    const g=gcal();
+    const a=g.accounts.find(function(x){return x.email===acc.email});
+    if(a){a.needsReauth=true;saveGcal(g)}
+    throw new Error('session expired — tap “reconnect” in Settings');
   });
+}
+function reconnectAccount(email){
+  requestToken({reconnect:true,hint:email}).then(function(resp){
+    const g=gcal();
+    const a=g.accounts.find(function(x){return x.email===email});
+    if(a){
+      a.token=resp.access_token;
+      a.expiry=Date.now()+(((resp.expires_in||3600)-60)*1000);
+      a.needsReauth=false;
+      saveGcal(g);
+    }
+    toast('Reconnected '+email);
+    showSettings();
+    syncCalendar(true);
+  }).catch(function(e){toast('Reconnect didn’t finish: '+e.message)});
 }
 function connectGoogleAccount(){
   const g=gcal();
@@ -1273,6 +1297,8 @@ function showSettings(){
     g.accounts.map(function(a){
       return h('div',{class:'acct-row'},
         h('span',{class:'em'},a.email),
+        a.needsReauth?h('button',{class:'tbtn',style:'color:var(--danger);padding:2px 4px',
+          onclick:function(){reconnectAccount(a.email)}},'reconnect'):null,
         h('button',{class:'xbtn','aria-label':'Disconnect '+a.email,
           onclick:function(){disconnectGoogleAccount(a.email)}},'×'));
     }),
