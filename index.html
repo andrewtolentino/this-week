@@ -163,7 +163,7 @@
     padding:14px;margin:2px 0 14px;display:flex;flex-direction:column;gap:12px}
   .editor .f label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
     color:var(--muted);margin-bottom:5px}
-  .editor input[type=text],.editor select{
+  .editor input[type=text],.editor input[type=time],.editor select{
     width:100%;font:inherit;font-size:16px;color:var(--ink);background:var(--surface);
     border:1px solid var(--line);border-radius:8px;padding:7px 10px}
   .frow{display:flex;gap:10px}
@@ -313,7 +313,7 @@ function seedRecurring(){
       const ds=iso(d);
       if(!S.tasks.some(t=>t.recurringId===r.id&&t.date===ds)){
         S.tasks.push({id:uid(),title:r.title,date:ds,tags:(r.tags||[]).slice(),subtasks:[],
-          done:false,timeOfDay:r.timeOfDay||null,createdAt:Date.now(),recurringId:r.id});
+          done:false,timeOfDay:r.timeOfDay||null,time:r.time||null,createdAt:Date.now(),recurringId:r.id});
       }
     }
   }
@@ -354,13 +354,13 @@ function parseQuick(text){
 function addTask(date,text){
   const p=parseQuick(text);if(!p.title)return;
   S.tasks.push({id:uid(),title:p.title,date:date,tags:p.tags,subtasks:[],done:false,
-    timeOfDay:null,createdAt:Date.now(),recurringId:null});
+    timeOfDay:null,time:null,createdAt:Date.now(),recurringId:null});
   save();
 }
 function getTask(id){return S.tasks.find(t=>t.id===id)}
 function ruleOf(t){return t.recurringId?S.recurring.find(r=>r.id===t.recurringId):null}
 function syncRuleFields(t){const r=ruleOf(t);if(!r)return;
-  r.title=t.title;r.tags=t.tags.slice();r.timeOfDay=t.timeOfDay}
+  r.title=t.title;r.tags=t.tags.slice();r.timeOfDay=t.timeOfDay;r.time=t.time||null}
 function setRepeatDays(t,days){
   if(!days.length){
     if(t.recurringId){
@@ -370,7 +370,7 @@ function setRepeatDays(t,days){
     save();return;
   }
   let r=ruleOf(t);
-  if(!r){r={id:uid(),title:t.title,days:[],tags:t.tags.slice(),timeOfDay:t.timeOfDay};
+  if(!r){r={id:uid(),title:t.title,days:[],tags:t.tags.slice(),timeOfDay:t.timeOfDay,time:t.time||null};
     S.recurring.push(r);t.recurringId=r.id;
     if(t.date==null){
       const t0=today0();
@@ -411,7 +411,8 @@ function h(tag,attrs){
 
 /* ---------- sorting ---------- */
 function todRank(t){return t.timeOfDay==='morning'?1:t.timeOfDay==='afternoon'?2:t.timeOfDay==='evening'?3:4}
-function sortDay(a,b){return todRank(a)-todRank(b)||a.createdAt-b.createdAt}
+function timeMin(t){if(!t.time)return 1e9;return (+t.time.slice(0,2))*60+(+t.time.slice(3,5))}
+function sortDay(a,b){return todRank(a)-todRank(b)||timeMin(a)-timeMin(b)||a.createdAt-b.createdAt}
 function dateKey(t){return t.date==null?'9999-99-99':t.date}
 function dayChip(t){
   if(t.date==null)return'Anytime';
@@ -558,7 +559,8 @@ function renderFlat(){
 function taskEl(t,opts){
   const wrap=h('div',{class:'task'+(t.done?' done':'')});
   const meta=[];
-  if(t.timeOfDay&&S.view!=='time')meta.push(h('span',{class:'chip'},TODLBL[t.timeOfDay]));
+  if(t.time)meta.push(h('span',{class:'chip time'},fmtClock(t.time)));
+  if(t.timeOfDay&&!t.time&&S.view!=='time')meta.push(h('span',{class:'chip'},TODLBL[t.timeOfDay]));
   for(const g of t.tags)meta.push(h('span',{class:'chip'},'#'+g));
   if(opts.showDay)meta.push(h('span',{class:'chip'},dayChip(t)));
   if(t.recurringId)meta.push(h('span',{class:'chip rep',title:'Repeats weekly'},'↻'));
@@ -669,7 +671,15 @@ function editorEl(t){
   }
   if(t.date&&!w.includes(t.date))dayOpts.push(h('option',{value:t.date,selected:true},t.date));
   const daySel=h('select',{onchange:function(){t.date=daySel.value===''?null:daySel.value;save();render()}},dayOpts);
-  ed.append(h('div',{class:'f'},h('label',null,'Day'),daySel));
+  const timeInp=h('input',{type:'time',value:t.time||'',
+    onchange:function(){
+      t.time=timeInp.value||null;
+      if(t.time)t.timeOfDay=todFromTime(t.time);
+      syncRuleFields(t);save();render();
+    }});
+  ed.append(h('div',{class:'frow'},
+    h('div',{class:'f'},h('label',null,'Day'),daySel),
+    h('div',{class:'f'},h('label',null,'Time'),timeInp)));
 
   /* time of day */
   const seg=h('div',{class:'seg'});
@@ -1132,11 +1142,12 @@ function syncCalendar(manual){
       if(!ev){delete S.calSeen[t.eventKey];removed++;return false} // event deleted (or left the week)
       if(!t.calTitle)t.calTitle=t.title.replace(/\s*\([^()]*\)\s*$/,'');
       if(t.calRawTitle==null)t.calRawTitle=ev.title;
-      const newTitle=t.calTitle+(ev.time?' ('+fmtClock(ev.time)+')':'');
-      if(ev.date!==t.date||newTitle!==t.title)updated++;
+      const newTime=ev.time||null;
+      if(ev.date!==t.date||newTime!==t.time)updated++;
       t.date=ev.date;
+      t.time=newTime;
       t.timeOfDay=ev.time?todFromTime(ev.time):null;
-      t.title=newTitle;
+      t.title=t.calTitle; // time lives in the time field, not the title
       if(S.calSeen[t.eventKey])S.calSeen[t.eventKey].d=ev.date;
       if(ev.title!==t.calRawTitle)renamed.push({task:t,ev:ev});
       return true;
@@ -1188,9 +1199,10 @@ function syncCalendar(manual){
           S.calSeen[e.key]={d:e.date};
           if(v.task){
             const calTitle=v.title||e.title;
-            S.tasks.push({id:uid(),title:calTitle+(e.time?' ('+fmtClock(e.time)+')':''),
+            S.tasks.push({id:uid(),title:calTitle,
               date:e.date,tags:['calendar'],subtasks:[],done:false,
-              timeOfDay:e.time?todFromTime(e.time):null,createdAt:Date.now(),recurringId:null,
+              timeOfDay:e.time?todFromTime(e.time):null,time:e.time||null,
+              createdAt:Date.now(),recurringId:null,
               eventKey:e.key,calTitle:calTitle,calRawTitle:e.title});
             added++;
           }
@@ -1199,7 +1211,7 @@ function syncCalendar(manual){
           t.calRawTitle=e.title;
           if(v.task){
             t.calTitle=v.title||e.title;
-            t.title=t.calTitle+(e.time?' ('+fmtClock(e.time)+')':'');
+            t.title=t.calTitle;
             updated++;
           }else{
             S.tasks=S.tasks.filter(function(x){return x!==t});
