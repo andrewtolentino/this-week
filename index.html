@@ -1110,12 +1110,23 @@ function cleanText(s){
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]/g,' ')
     .replace(/\s+/g,' ').trim().slice(0,200);
 }
+function cleanTags(a){
+  if(!Array.isArray(a))return[];
+  return a.map(function(g){return String(g).toLowerCase().replace(/^#/,'').replace(/[^a-z0-9-]/g,'')})
+    .filter(function(g){return g&&g!=='calendar'&&/[a-z0-9]/.test(g)}).slice(0,2);
+}
 function classifyEvents(evs){
+  const vocab={};
+  S.tasks.forEach(function(t){(t.tags||[]).forEach(function(g){if(g!=='calendar')vocab[g]=1})});
+  (S.recurring||[]).forEach(function(r){(r.tags||[]).forEach(function(g){if(g!=='calendar')vocab[g]=1})});
+  const vocabList=Object.keys(vocab).slice(0,30);
   const list=evs.map(function(e,i){
     return JSON.stringify({i:i,title:cleanText(e.title),date:e.date,time:e.time,
       allDay:!!e.allDay,calendar:cleanText(e.calendar)});
   }).join('\n');
-  const prompt='These are upcoming events from my calendar. For each one, decide whether it needs me to actively do or attend something (meetings, calls, classes, appointments, errands, deadlines, things to prepare) — or whether it is only informational (birthdays, holidays, other people’s time off, anniversaries, observances, FYI markers).\n\nReply with ONE JSON array and nothing else, like: [{"i":0,"task":true,"title":"…"},{"i":1,"task":false,"title":"…"}]\nOne object per event: "i" is the event index, "task" is whether it needs doing, "title" is a short cleaned-up task title with no date in it.\n\n'+list;
+  const prompt='These are upcoming events from my calendar. For each one, decide whether it needs me to actively do or attend something (meetings, calls, classes, appointments, errands, deadlines, things to prepare) — or whether it is only informational (birthdays, holidays, other people’s time off, anniversaries, observances, FYI markers).\n\nReply with ONE JSON array and nothing else, like: [{"i":0,"task":true,"title":"…","tags":["coaching"]},{"i":1,"task":false,"title":"…","tags":[]}]\nOne object per event: "i" is the event index, "task" is whether it needs doing, "title" is a short cleaned-up task title with no date in it, "tags" is 0–2 short lowercase topic tags for the event.'
+    +(vocabList.length?' Prefer my existing tags when one fits: '+vocabList.join(', ')+'. Only invent a new tag when the topic is clear (like coaching, workout, travel); otherwise use [].':' Only add a tag when the topic is clear (like coaching, workout, travel); otherwise use [].')
+    +'\n\n'+list;
   return callClaude(prompt,8192)
     .catch(function(){return callClaude(prompt,8192)}) // one retry for transient network blips
     .then(function(text){
@@ -1224,7 +1235,7 @@ function syncCalendar(manual){
           if(v.task){
             const calTitle=v.title||e.title;
             S.tasks.push({id:uid(),title:calTitle,
-              date:e.date,tags:['calendar'],subtasks:[],done:false,
+              date:e.date,tags:['calendar'].concat(cleanTags(v.tags)),subtasks:[],done:false,
               timeOfDay:e.time?todFromTime(e.time):null,time:e.time||null,
               createdAt:Date.now(),recurringId:null,
               eventKey:e.key,calTitle:calTitle,calRawTitle:e.title});
@@ -1236,6 +1247,7 @@ function syncCalendar(manual){
           if(v.task){
             t.calTitle=v.title||e.title;
             t.title=t.calTitle;
+            cleanTags(v.tags).forEach(function(g){if(t.tags.indexOf(g)<0)t.tags.push(g)});
             updated++;
           }else{
             S.tasks=S.tasks.filter(function(x){return x!==t});
