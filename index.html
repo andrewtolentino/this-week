@@ -1024,7 +1024,7 @@ function collectEvents(){
   const t0=today0();
   const timeMin=t0.toISOString();
   const timeMax=addDays(t0,7).toISOString();
-  const all=[];const errors=[];
+  const all=[];const errors=[];const okCals=[];
   let chain=Promise.resolve();
   g.accounts.forEach(function(acc){
     chain=chain.then(function(){
@@ -1041,6 +1041,7 @@ function collectEvents(){
                   +'&timeMin='+encodeURIComponent(timeMin)
                   +'&timeMax='+encodeURIComponent(timeMax);
                 return gFetch(url,tok).then(function(ev){
+                  okCals.push(acc.email+'|'+cal.id);
                   (ev.items||[]).forEach(function(e){
                     if(e.status==='cancelled')return;
                     const me=(e.attendees||[]).find(function(a){return a.self});
@@ -1063,7 +1064,7 @@ function collectEvents(){
       }).catch(function(err){errors.push(acc.email+': '+err.message)});
     });
   });
-  return chain.then(function(){return {events:all,errors:errors}});
+  return chain.then(function(){return {events:all,errors:errors,okCals:okCals}});
 }
 
 function todFromTime(t){const hh=+t.slice(0,2);return hh<12?'morning':(hh<17?'afternoon':'evening')}
@@ -1080,14 +1081,22 @@ function classifyEvents(evs){
     return JSON.stringify({i:i,title:cleanText(e.title),date:e.date,time:e.time,
       allDay:!!e.allDay,calendar:cleanText(e.calendar)});
   }).join('\n');
-  const prompt='These are upcoming events from my calendar. For each one, decide whether it needs me to actively do or attend something (meetings, calls, classes, appointments, errands, deadlines, things to prepare) — or whether it is only informational (birthdays, holidays, other people’s time off, anniversaries, observances, FYI markers).\n\nReply with ONLY a JSON array, nothing else. One object per event: {"i":<index>,"task":true|false,"title":"<short cleaned-up task title, no date in it>"}\n\n'+list;
+  const prompt='These are upcoming events from my calendar. For each one, decide whether it needs me to actively do or attend something (meetings, calls, classes, appointments, errands, deadlines, things to prepare) — or whether it is only informational (birthdays, holidays, other people’s time off, anniversaries, observances, FYI markers).\n\nReply with ONE JSON array and nothing else, like: [{"i":0,"task":true,"title":"…"},{"i":1,"task":false,"title":"…"}]\nOne object per event: "i" is the event index, "task" is whether it needs doing, "title" is a short cleaned-up task title with no date in it.\n\n'+list;
   return callClaude(prompt,8192)
     .catch(function(){return callClaude(prompt,8192)}) // one retry for transient network blips
     .then(function(text){
+      // accept a proper array, or one JSON object per line (models mirror the input format)
+      let arr=null;
       const m=text.match(/\[[\s\S]*\]/);
-      if(!m)throw new Error('AI reply wasn’t JSON: “'+text.slice(0,80)+'…”');
-      const arr=JSON.parse(m[0]);
-      if(!Array.isArray(arr))throw new Error('unexpected AI reply shape');
+      if(m){try{const p=JSON.parse(m[0]);if(Array.isArray(p))arr=p}catch(e){}}
+      if(!arr){
+        const objs=text.match(/\{[^{}]*\}/g);
+        if(objs&&objs.length){
+          arr=[];
+          objs.forEach(function(o){try{arr.push(JSON.parse(o))}catch(e){}});
+        }
+      }
+      if(!arr||!arr.length)throw new Error('AI reply wasn’t JSON: “'+text.slice(0,80)+'…”');
       return arr;
     });
 }
@@ -1103,11 +1112,41 @@ function syncCalendar(manual){
   let stage='reading your calendars';
   function noteError(msg){const g2=gcal();g2.lastError=msg;saveGcal(g2)}
   collectEvents().then(function(res){
-    stage='choosing events';
+    stage='reconciling with your calendar';
     if(!S.calSeen)S.calSeen={};
     const t0=iso(today0());
     for(const k in S.calSeen){if(S.calSeen[k].d&&S.calSeen[k].d<t0)delete S.calSeen[k]}
     const win=winDates();
+
+    const evByKey={};res.events.forEach(function(e){evByKey[e.key]=e});
+    const okSet={};(res.okCals||[]).forEach(function(p){okSet[p]=1});
+    function calOfKey(key){const p=key.split('|');return p[0]+'|'+p[1]}
+
+    /* reconcile existing calendar-born tasks (unchecked only; done tasks are a record) */
+    let removed=0,updated=0;
+    const renamed=[]; // {task, ev} — needs AI re-check
+    S.tasks=S.tasks.filter(function(t){
+      if(!t.eventKey||t.done)return true;
+      if(!okSet[calOfKey(t.eventKey)])return true; // couldn't read that calendar this sync — leave alone
+      const ev=evByKey[t.eventKey];
+      if(!ev){delete S.calSeen[t.eventKey];removed++;return false} // event deleted (or left the week)
+      if(!t.calTitle)t.calTitle=t.title.replace(/\s*\([^()]*\)\s*$/,'');
+      if(t.calRawTitle==null)t.calRawTitle=ev.title;
+      const newTitle=t.calTitle+(ev.time?' ('+fmtClock(ev.time)+')':'');
+      if(ev.date!==t.date||newTitle!==t.title)updated++;
+      t.date=ev.date;
+      t.timeOfDay=ev.time?todFromTime(ev.time):null;
+      t.title=newTitle;
+      if(S.calSeen[t.eventKey])S.calSeen[t.eventKey].d=ev.date;
+      if(ev.title!==t.calRawTitle)renamed.push({task:t,ev:ev});
+      return true;
+    });
+    /* forget skipped events that no longer exist, so a re-created event gets a fresh look */
+    for(const k in S.calSeen){
+      if(okSet[calOfKey(k)]&&!evByKey[k])delete S.calSeen[k];
+    }
+
+    stage='choosing events';
     const fresh=res.events.filter(function(e){
       if(!e.date||win.indexOf(e.date)<0)return false;
       if(S.calSeen[e.key])return false;
@@ -1116,35 +1155,60 @@ function syncCalendar(manual){
       }
       return true;
     });
-    if(!fresh.length){
-      calSyncing=false;g.lastSync=Date.now();
-      g.lastError=res.errors.length?('Couldn’t read: '+res.errors.join(' · ')):'';
-      saveGcal(g);save();
-      if(manual)toast(res.errors.length?('Sync issue: '+res.errors[0]):'Calendar is in sync — nothing new');
-      return;
-    }
-    stage='asking Claude about '+fresh.length+' event'+(fresh.length===1?'':'s');
-    return classifyEvents(fresh).then(function(verdicts){
-      stage='adding tasks';
-      let added=0;
-      verdicts.forEach(function(v){
-        const e=fresh[v.i];
-        if(!e||S.calSeen[e.key])return;
-        S.calSeen[e.key]={d:e.date};
-        if(v.task){
-          const title=(v.title||e.title)+(e.time?' ('+fmtClock(e.time)+')':'');
-          S.tasks.push({id:uid(),title:title,date:e.date,tags:['calendar'],subtasks:[],done:false,
-            timeOfDay:e.time?todFromTime(e.time):null,createdAt:Date.now(),recurringId:null,eventKey:e.key});
-          added++;
-        }
-      });
+
+    const toClassify=[];
+    fresh.forEach(function(e){toClassify.push({e:e,kind:'new'})});
+    renamed.forEach(function(r){toClassify.push({e:r.ev,kind:'rename',task:r.task})});
+
+    function finish(added){
       calSyncing=false;
       g.lastSync=Date.now();
       g.lastError=res.errors.length?('Partly synced — couldn’t read: '+res.errors.join(' · ')):'';
       saveGcal(g);
       save();render();
-      if(added>0)toast('Added '+added+' task'+(added===1?'':'s')+' from your calendar');
-      else if(manual)toast('Checked your calendars — nothing that needs doing');
+      const bits=[];
+      if(added>0)bits.push('added '+added);
+      if(updated>0)bits.push('updated '+updated);
+      if(removed>0)bits.push('removed '+removed);
+      if(bits.length)toast('Calendar: '+bits.join(' · '));
+      else if(manual)toast(res.errors.length?('Sync issue: '+res.errors[0]):'Calendar is in sync — nothing to change');
+    }
+
+    if(!toClassify.length){finish(0);return}
+    stage='asking Claude about '+toClassify.length+' event'+(toClassify.length===1?'':'s');
+    return classifyEvents(toClassify.map(function(x){return x.e})).then(function(verdicts){
+      stage='applying changes';
+      let added=0;
+      verdicts.forEach(function(v){
+        const item=toClassify[v.i];
+        if(!item)return;
+        const e=item.e;
+        if(item.kind==='new'){
+          if(S.calSeen[e.key])return;
+          S.calSeen[e.key]={d:e.date};
+          if(v.task){
+            const calTitle=v.title||e.title;
+            S.tasks.push({id:uid(),title:calTitle+(e.time?' ('+fmtClock(e.time)+')':''),
+              date:e.date,tags:['calendar'],subtasks:[],done:false,
+              timeOfDay:e.time?todFromTime(e.time):null,createdAt:Date.now(),recurringId:null,
+              eventKey:e.key,calTitle:calTitle,calRawTitle:e.title});
+            added++;
+          }
+        }else{ // renamed event — refresh or retire its task
+          const t=item.task;
+          t.calRawTitle=e.title;
+          if(v.task){
+            t.calTitle=v.title||e.title;
+            t.title=t.calTitle+(e.time?' ('+fmtClock(e.time)+')':'');
+            updated++;
+          }else{
+            S.tasks=S.tasks.filter(function(x){return x!==t});
+            S.calSeen[e.key]={d:e.date};
+            removed++;
+          }
+        }
+      });
+      finish(added);
     });
   }).catch(function(e){
     calSyncing=false;
