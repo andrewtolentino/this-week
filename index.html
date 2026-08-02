@@ -1066,11 +1066,15 @@ function classifyEvents(evs){
     return JSON.stringify({i:i,title:e.title,date:e.date,time:e.time,allDay:e.allDay,calendar:e.calendar});
   }).join('\n');
   const prompt='These are upcoming events from my calendar. For each one, decide whether it needs me to actively do or attend something (meetings, calls, classes, appointments, errands, deadlines, things to prepare) — or whether it is only informational (birthdays, holidays, other people’s time off, anniversaries, observances, FYI markers).\n\nReply with ONLY a JSON array, nothing else. One object per event: {"i":<index>,"task":true|false,"title":"<short cleaned-up task title, no date in it>"}\n\n'+list;
-  return callClaude(prompt).then(function(text){
-    const m=text.match(/\[[\s\S]*\]/);
-    if(!m)throw new Error('unexpected AI reply');
-    return JSON.parse(m[0]);
-  });
+  return callClaude(prompt)
+    .catch(function(){return callClaude(prompt)}) // one retry for transient network blips
+    .then(function(text){
+      const m=text.match(/\[[\s\S]*\]/);
+      if(!m)throw new Error('unexpected AI reply');
+      const arr=JSON.parse(m[0]);
+      if(!Array.isArray(arr))throw new Error('unexpected AI reply shape');
+      return arr;
+    });
 }
 
 let calSyncing=false;
@@ -1081,7 +1085,10 @@ function syncCalendar(manual){
   if(!getApiKey()){if(manual)toast('Add your Claude API key first — it decides what’s a task');return}
   calSyncing=true;
   if(manual)toast('Syncing your calendars…');
+  let stage='reading your calendars';
+  function noteError(msg){const g2=gcal();g2.lastError=msg;saveGcal(g2)}
   collectEvents().then(function(res){
+    stage='choosing events';
     if(!S.calSeen)S.calSeen={};
     const t0=iso(today0());
     for(const k in S.calSeen){if(S.calSeen[k].d&&S.calSeen[k].d<t0)delete S.calSeen[k]}
@@ -1095,11 +1102,15 @@ function syncCalendar(manual){
       return true;
     });
     if(!fresh.length){
-      calSyncing=false;g.lastSync=Date.now();saveGcal(g);save();
+      calSyncing=false;g.lastSync=Date.now();
+      g.lastError=res.errors.length?('Couldn’t read: '+res.errors.join(' · ')):'';
+      saveGcal(g);save();
       if(manual)toast(res.errors.length?('Sync issue: '+res.errors[0]):'Calendar is in sync — nothing new');
       return;
     }
+    stage='asking Claude about '+fresh.length+' event'+(fresh.length===1?'':'s');
     return classifyEvents(fresh).then(function(verdicts){
+      stage='adding tasks';
       let added=0;
       verdicts.forEach(function(v){
         const e=fresh[v.i];
@@ -1113,14 +1124,18 @@ function syncCalendar(manual){
         }
       });
       calSyncing=false;
-      g.lastSync=Date.now();saveGcal(g);
+      g.lastSync=Date.now();
+      g.lastError=res.errors.length?('Partly synced — couldn’t read: '+res.errors.join(' · ')):'';
+      saveGcal(g);
       save();render();
       if(added>0)toast('Added '+added+' task'+(added===1?'':'s')+' from your calendar');
       else if(manual)toast('Checked your calendars — nothing that needs doing');
     });
   }).catch(function(e){
     calSyncing=false;
-    if(manual)toast('Calendar sync failed: '+e.message);
+    const detail=(e&&e.name?e.name+': ':'')+((e&&e.message)?e.message:String(e));
+    noteError('Failed while '+stage+' — '+detail);
+    if(manual)toast('Sync failed while '+stage+' (details in Settings)');
   });
 }
 
@@ -1177,6 +1192,7 @@ function showSettings(){
         syncCalendar(true);
       }},'Sync now'):null
     ),
+    g.lastError?h('p',{class:'set-note',style:'color:var(--danger)'},g.lastError):null,
     h('p',{class:'set-note'},
       g.lastSync
         ?('Last synced '+new Date(g.lastSync).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'. Claude decides which events need doing; birthdays and FYIs are skipped.')
