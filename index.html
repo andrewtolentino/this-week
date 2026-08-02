@@ -821,8 +821,20 @@ function shareFallback(text){
 
 /* ---------- Claude API ---------- */
 const KEYKEY='this-week-api-key';
-function getApiKey(){try{return localStorage.getItem(KEYKEY)||''}catch(e){return''}}
+function getApiKey(){
+  // keys are printable ASCII; strip anything else (zero-width chars from
+  // pasting make Safari's fetch throw a bare "Type error" on the header)
+  try{return (localStorage.getItem(KEYKEY)||'').replace(/[^\x21-\x7e]/g,'')}catch(e){return''}
+}
 function callClaude(promptText,maxTokens){
+  const body=JSON.stringify({
+    model:'claude-opus-5',
+    max_tokens:maxTokens||2048,
+    output_config:{effort:'low'},
+    messages:[{role:'user',content:promptText}]
+  }).replace(/[\u007f-\uffff]/g,function(c){
+    return '\\u'+('000'+c.charCodeAt(0).toString(16)).slice(-4);
+  }); // pure-ASCII body: valid JSON, immune to encoding quirks
   return fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
     headers:{
@@ -831,12 +843,7 @@ function callClaude(promptText,maxTokens){
       'anthropic-version':'2023-06-01',
       'anthropic-dangerous-direct-browser-access':'true'
     },
-    body:JSON.stringify({
-      model:'claude-opus-5',
-      max_tokens:maxTokens||2048,
-      output_config:{effort:'low'},
-      messages:[{role:'user',content:promptText}]
-    })
+    body:body
   }).then(function(res){
     return res.json().catch(function(){return null}).then(function(data){
       if(!res.ok){
