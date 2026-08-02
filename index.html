@@ -1394,18 +1394,20 @@ document.addEventListener('pointerdown',function(e){
   }
 },true);
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&openId){openId=null;render()}});
-document.addEventListener('visibilitychange',function(){
-  if(!document.hidden){ensureDay();render()}
-});
-ensureDay();
-render();
-/* quiet calendar sync at most every 6 hours; silent token refresh may fail
-   without a user gesture — that's fine, manual Sync now still works */
-(function(){
+function autoSyncIfDue(){
   const g=gcal();
   if(g.clientId&&g.accounts.length&&getApiKey()&&Date.now()-g.lastSync>6*3600*1000){
     setTimeout(function(){syncCalendar(false)},800);
   }
-})();
+}
+document.addEventListener('visibilitychange',function(){
+  if(!document.hidden){ensureDay();render();autoSyncIfDue()}
+});
+ensureDay();
+render();
+/* quiet calendar sync at most every 6 hours, on load and on resume;
+   silent token refresh may fail without a user gesture — that's fine,
+   manual Sync now (or the reconnect button) still works */
+autoSyncIfDue();
 })();
 </script>
