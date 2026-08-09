@@ -173,8 +173,10 @@
   .editor .f label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
     color:var(--muted);margin-bottom:5px}
   .editor input[type=text],.editor input[type=time],.editor select{
-    width:100%;font:inherit;font-size:16px;color:var(--ink);background:var(--surface);
+    width:100%;height:40px;font:inherit;font-size:16px;color:var(--ink);background:var(--surface);
     border:1px solid var(--line);border-radius:8px;padding:7px 10px}
+  .editor input[type=time]{-webkit-appearance:none;appearance:none;display:block;text-align:left}
+  .editor input[type=time]::-webkit-date-and-time-value{text-align:left;margin:0}
   .frow{display:flex;gap:10px}
   .frow .f{flex:1;min-width:0}
   .seg{display:flex;gap:6px;flex-wrap:wrap}
