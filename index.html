@@ -119,6 +119,15 @@
   .day-count{margin-left:auto;font-family:var(--mono);color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
   .sub-head{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:14px 0 0}
 
+  /* ---------- mood log ---------- */
+  .mood-label{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--faint);margin:12px 0 6px}
+  .mood-row{display:flex;flex-wrap:wrap;gap:6px;padding-bottom:8px;
+    border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .mood-row .m{font:inherit;font-size:12.5px;color:var(--muted);background:var(--bg);
+    border:1px solid var(--line);border-radius:99px;padding:3px 11px;cursor:pointer}
+  .mood-row .m.on{background:var(--accent-soft);border-color:var(--accent);color:var(--ink)}
+
   /* ---------- tasks ---------- */
   .task{border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
   .task:last-of-type{border-bottom:none}
@@ -474,6 +483,24 @@ function renderStrip(){
   }
 }
 
+const MOODS=['happy','calm','motivated','meh','tired','exhausted','stressed','sad'];
+function moodRow(){
+  const t0=iso(today0());
+  if(!S.moods)S.moods={};
+  const cur=S.moods[t0]||[];
+  const row=h('div',{class:'mood-row'});
+  MOODS.forEach(function(m){
+    row.append(h('button',{class:'m'+(cur.indexOf(m)>=0?' on':''),onclick:function(){
+      const list=S.moods[t0]||[];
+      const i=list.indexOf(m);
+      if(i>=0)list.splice(i,1);else list.push(m);
+      if(list.length)S.moods[t0]=list;else delete S.moods[t0];
+      save();render();
+    }},m));
+  });
+  return row;
+}
+
 function daySection(key,name,dateLbl,tasks,grouped,isToday){
   const doneN=tasks.filter(t=>t.done).length;
   const sec=h('section',{class:'day',id:key==null?'sec-day-any':'sec-day-'+key});
@@ -482,6 +509,9 @@ function daySection(key,name,dateLbl,tasks,grouped,isToday){
     dateLbl?h('span',{class:'day-date'},dateLbl):null,
     tasks.length?h('span',{class:'day-count'},doneN+'/'+tasks.length):null
   ));
+  if(isToday){
+    sec.append(h('div',{class:'mood-label'},'How I’m feeling'),moodRow());
+  }
   if(grouped&&tasks.length){
     const groups=[['morning'],['afternoon'],['evening'],[null]];
     for(const g of groups){
@@ -590,7 +620,9 @@ function taskEl(t,opts){
         subs.append(h('div',{class:'sub-row'+(s.done?' done':'')},
           h('button',{class:'check sm'+(s.done?' on':''),'aria-label':'Toggle subtask',
             onclick:function(){s.done=!s.done;save();render()}},'✓'),
-          h('span',null,s.title)));
+          h('span',{style:'flex:1;min-width:0'},s.title),
+          h('button',{class:'xbtn','aria-label':'Delete subtask',
+            onclick:function(){t.subtasks=t.subtasks.filter(function(x){return x!==s});save();render()}},'×')));
       })(s);
     }
     if(subAddId===t.id){
@@ -790,6 +822,19 @@ function buildCheckin(){
   if(any.length){
     lines.push('');lines.push('Anytime this week:');
     any.forEach(t=>lines.push('- '+fmt(t)));
+  }
+  if(S.moods){
+    const t0d=today0();const ml=[];
+    for(let i=6;i>=0;i--){
+      const dd=addDays(t0d,-i);const ds=iso(dd);
+      if(S.moods[ds]&&S.moods[ds].length){
+        ml.push((i===0?'today':DSHORT[wdIdx(dd)])+': '+S.moods[ds].join(', '));
+      }
+    }
+    if(ml.length){
+      lines.push('');
+      lines.push('How I’ve been feeling — '+ml.join(' · ')+'. Weave this in kindly if it’s relevant.');
+    }
   }
   return lines.join('\n');
 }
