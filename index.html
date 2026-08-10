@@ -310,6 +310,7 @@ function defaults(s){
   s.tasks=s.tasks||[];s.recurring=s.recurring||[];
   s.moods=s.moods||{};s.habits=s.habits||[];s.habitLog=s.habitLog||{};s.archive=s.archive||{};
   s.habits=s.habits.map(function(x){return typeof x==='string'?{name:x,per:7}:x}); // v1 habits were plain names
+  s.deleted=s.deleted||{};s.logU=s.logU||{};s.habitsU=s.habitsU||0;
   return s;
 }
 function habitNames(){return S.habits.map(function(x){return x.name})}
@@ -321,8 +322,11 @@ function load(){
   }}catch(e){}
   return defaults({version:2,tasks:[],recurring:[],view:'days'});
 }
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}
+  if(typeof schedulePush==='function')schedulePush();}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
+function touch(t){t.u=Date.now()}
+function entomb(id){S.deleted[id]=Date.now()}
 
 /* ---------- dates ---------- */
 function today0(){const d=new Date();return new Date(d.getFullYear(),d.getMonth(),d.getDate())}
@@ -344,9 +348,9 @@ function seedRecurring(){
       const d=addDays(t0,i);
       if(!r.days.includes(wdIdx(d)))continue;
       const ds=iso(d);
-      if(!S.tasks.some(t=>t.recurringId===r.id&&t.date===ds)){
-        S.tasks.push({id:uid(),title:r.title,date:ds,tags:(r.tags||[]).slice(),subtasks:[],
-          done:false,timeOfDay:r.timeOfDay||null,time:r.time||null,createdAt:Date.now(),recurringId:r.id});
+      if(!S.deleted[r.id+'@'+ds]&&!S.tasks.some(t=>t.recurringId===r.id&&t.date===ds)){
+        S.tasks.push({id:r.id+'@'+ds,title:r.title,date:ds,tags:(r.tags||[]).slice(),subtasks:[],
+          done:false,timeOfDay:r.timeOfDay||null,time:r.time||null,createdAt:Date.now(),recurringId:r.id,u:Date.now()});
       }
     }
   }
@@ -379,6 +383,7 @@ function ensureDay(){
     return;
   }
   archivePast();
+  S.tasks.forEach(function(t){if(t.date&&t.date<t0)entomb(t.id)});
   S.tasks=S.tasks.filter(t=>!(t.date&&t.date<t0));
   seedRecurring();save();
   if(past.length&&past.every(t=>t.done)){
@@ -388,8 +393,9 @@ function ensureDay(){
 function resolveRollover(move){
   const t0=iso(today0());
   const n=pendingRollover?pendingRollover.count:0;
-  if(move)for(const t of S.tasks){if(t.date&&t.date<t0&&!t.done&&!t.recurringId){t.date=t0;t.carried=(t.carried||0)+1}}
+  if(move)for(const t of S.tasks){if(t.date&&t.date<t0&&!t.done&&!t.recurringId){t.date=t0;t.carried=(t.carried||0)+1;touch(t)}}
   archivePast();
+  S.tasks.forEach(function(t){if(t.date&&t.date<t0)entomb(t.id)});
   S.tasks=S.tasks.filter(t=>!(t.date&&t.date<t0));
   seedRecurring();pendingRollover=null;save();render();
   toast(move
@@ -408,7 +414,7 @@ function parseQuick(text){
 function addTask(date,text){
   const p=parseQuick(text);if(!p.title)return;
   S.tasks.push({id:uid(),title:p.title,date:date,tags:p.tags,subtasks:[],done:false,
-    timeOfDay:null,time:null,createdAt:Date.now(),recurringId:null});
+    timeOfDay:null,time:null,createdAt:Date.now(),recurringId:null,u:Date.now()});
   save();
 }
 function getTask(id){return S.tasks.find(t=>t.id===id)}
@@ -438,6 +444,7 @@ function setRepeatDays(t,days){
   seedRecurring();save();
 }
 function deleteTask(t){
+  entomb(t.id);
   S.tasks=S.tasks.filter(x=>x.id!==t.id);
   if(t.recurringId){const r=ruleOf(t);
     if(r&&t.date!=null){const wd=wdIdx(parseISO(t.date));r.days=r.days.filter(d=>d!==wd);
@@ -581,6 +588,7 @@ function habitRow(){
       const i=list.indexOf(name);
       if(i>=0)list.splice(i,1);else list.push(name);
       if(list.length)S.habitLog[t0]=list;else delete S.habitLog[t0];
+      S.logU['h:'+t0]=Date.now();
       save();render();
     }},name,extra?h('span',{class:'streak'},extra):null));
   });
@@ -597,6 +605,7 @@ function moodRow(){
       const i=list.indexOf(m);
       if(i>=0)list.splice(i,1);else list.push(m);
       if(list.length)S.moods[t0]=list;else delete S.moods[t0];
+      S.logU['m:'+t0]=Date.now();
       save();render();
     }},m));
   });
@@ -735,7 +744,7 @@ function taskEl(t,opts){
 
   wrap.append(h('div',{class:'task-row'},
     h('button',{class:'check'+(t.done?' on':''),'aria-label':t.done?'Mark not done':'Mark done',
-      onclick:function(){t.done=!t.done;save();render()}},'✓'),
+      onclick:function(){t.done=!t.done;touch(t);save();render()}},'✓'),
     h('div',{class:'task-main',onclick:function(){openId=openId===t.id?null:t.id;subAddId=null;addingKey='none';render()}},
       h('div',{class:'task-title'},t.title),
       meta.length?h('div',{class:'meta'},meta):null
@@ -755,10 +764,10 @@ function taskEl(t,opts){
       (function(s){
         subs.append(h('div',{class:'sub-row'+(s.done?' done':'')},
           h('button',{class:'check sm'+(s.done?' on':''),'aria-label':'Toggle subtask',
-            onclick:function(){s.done=!s.done;save();render()}},'✓'),
+            onclick:function(){s.done=!s.done;touch(t);save();render()}},'✓'),
           h('span',{style:'flex:1;min-width:0'},s.title),
           h('button',{class:'xbtn','aria-label':'Delete subtask',
-            onclick:function(){t.subtasks=t.subtasks.filter(function(x){return x!==s});save();render()}},'×')));
+            onclick:function(){t.subtasks=t.subtasks.filter(function(x){return x!==s});touch(t);save();render()}},'×')));
       })(s);
     }
     if(subAddId===t.id){
@@ -777,7 +786,7 @@ function taskEl(t,opts){
         if(!qInp.value.trim())return;
         subSaved=true;
         t.subtasks.push({id:uid(),title:qInp.value.trim(),done:false});
-        save();render();
+        touch(t);save();render();
         const again=document.querySelector('.sub-quick');if(again)again.focus();
       }},qInp);
       subs.append(h('div',{class:'sub-row'},h('span',{class:'check sm',style:'border-color:transparent'}),qForm));
@@ -829,7 +838,7 @@ function editorEl(t){
   const w=winDates(),t0=today0();
 
   const title=h('input',{type:'text',value:t.title,'aria-label':'Task title',
-    onchange:function(){t.title=title.value.trim()||t.title;syncRuleFields(t);save();render()}});
+    onchange:function(){t.title=title.value.trim()||t.title;touch(t);syncRuleFields(t);save();render()}});
   ed.append(h('div',{class:'f'},h('label',null,'Task'),title));
 
   /* day + time */
@@ -838,12 +847,12 @@ function editorEl(t){
     dayOpts.push(h('option',{value:w[i],selected:t.date===w[i]},winLabel(i,addDays(t0,i))));
   }
   if(t.date&&!w.includes(t.date))dayOpts.push(h('option',{value:t.date,selected:true},t.date));
-  const daySel=h('select',{onchange:function(){t.date=daySel.value===''?null:daySel.value;save();render()}},dayOpts);
+  const daySel=h('select',{onchange:function(){t.date=daySel.value===''?null:daySel.value;touch(t);save();render()}},dayOpts);
   const timeInp=h('input',{type:'time',value:t.time||'',
     onchange:function(){
       t.time=timeInp.value||null;
       if(t.time)t.timeOfDay=todFromTime(t.time);
-      syncRuleFields(t);save();render();
+      touch(t);syncRuleFields(t);save();render();
     }});
   ed.append(h('div',{class:'frow'},
     h('div',{class:'f'},h('label',null,'Day'),daySel),
@@ -855,7 +864,7 @@ function editorEl(t){
   for(const o of opts){
     (function(o){
       seg.append(h('button',{class:(t.timeOfDay||null)===o[0]?'on':'',
-        onclick:function(){t.timeOfDay=o[0];syncRuleFields(t);save();render()}},o[1]));
+        onclick:function(){t.timeOfDay=o[0];touch(t);syncRuleFields(t);save();render()}},o[1]));
     })(o);
   }
   ed.append(h('div',{class:'f'},h('label',null,'Part of day'),seg));
@@ -864,7 +873,7 @@ function editorEl(t){
   const tagInp=h('input',{type:'text',value:t.tags.map(g=>'#'+g).join(' '),placeholder:'#errands #home',
     onchange:function(){
       t.tags=tagInp.value.split(/[\s,]+/).map(w2=>w2.replace(/^#/,'').toLowerCase()).filter(Boolean);
-      syncRuleFields(t);save();render()}});
+      touch(t);syncRuleFields(t);save();render()}});
   ed.append(h('div',{class:'f'},h('label',null,'Tags'),tagInp));
 
   /* subtasks */
@@ -872,10 +881,10 @@ function editorEl(t){
   for(const s of t.subtasks){
     (function(s){
       subsBox.append(h('div',{class:'sub-row'+(s.done?' done':'')},
-        h('button',{class:'check sm'+(s.done?' on':''),onclick:function(){s.done=!s.done;save();render()}},'✓'),
+        h('button',{class:'check sm'+(s.done?' on':''),onclick:function(){s.done=!s.done;touch(t);save();render()}},'✓'),
         h('span',{style:'flex:1'},s.title),
         h('button',{class:'xbtn','aria-label':'Delete subtask',
-          onclick:function(){t.subtasks=t.subtasks.filter(x=>x!==s);save();render()}},'×')));
+          onclick:function(){t.subtasks=t.subtasks.filter(x=>x!==s);touch(t);save();render()}},'×')));
     })(s);
   }
   const subInp=h('input',{type:'text',placeholder:'Add a subtask…',enterkeyhint:'done'});
@@ -883,7 +892,7 @@ function editorEl(t){
     e.preventDefault();
     if(!subInp.value.trim())return;
     t.subtasks.push({id:uid(),title:subInp.value.trim(),done:false});
-    save();render();
+    touch(t);save();render();
     const box=document.querySelector('.ed-subs input[type=text]');if(box)box.focus();
   }},subInp);
   subsBox.append(h('div',{class:'sub-row'},h('span',{class:'check sm',style:'border-color:transparent'}),subForm));
@@ -923,10 +932,10 @@ function renderFoot(){
   foot.append(
     h('span',null,'·'),
     fbtn('done','Clear completed','Sure? Tap again',function(){
-      archiveDone();S.tasks=S.tasks.filter(t=>!t.done);save();render()}),
+      archiveDone();S.tasks.forEach(function(t){if(t.done)entomb(t.id)});S.tasks=S.tasks.filter(t=>!t.done);save();render()}),
     h('span',null,'·'),
     fbtn('week','Clear everything','Really clear? Tap again',function(){
-      archiveDone();S.tasks=[];seedRecurring();save();render()})
+      archiveDone();S.tasks.forEach(function(t){entomb(t.id)});S.tasks=[];seedRecurring();save();render()})
   );
 }
 
@@ -1012,17 +1021,17 @@ function applyDump(r){
       date:(t.date&&win.indexOf(t.date)>=0)?t.date:null,
       tags:cleanTags(t.tags||[]),subtasks:[],done:false,
       timeOfDay:(['morning','afternoon','evening'].indexOf(t.timeOfDay)>=0)?t.timeOfDay:null,
-      time:null,createdAt:Date.now(),recurringId:null});
+      time:null,createdAt:Date.now(),recurringId:null,u:Date.now()});
   });
   if(r.moods.length){
     const list=S.moods[t0]||[];
     r.moods.forEach(function(m){if(list.indexOf(m)<0)list.push(m)});
-    S.moods[t0]=list;
+    S.moods[t0]=list;S.logU['m:'+t0]=Date.now();
   }
   if(r.habits.length){
     const list=S.habitLog[t0]||[];
     r.habits.forEach(function(hb){if(list.indexOf(hb)<0)list.push(hb)});
-    S.habitLog[t0]=list;
+    S.habitLog[t0]=list;S.logU['h:'+t0]=Date.now();
   }
   save();render();
   toast('Sorted and added');
@@ -1333,11 +1342,11 @@ function syncCalendar(manual){
       if(!t.eventKey||t.done)return true;
       if(!okSet[calOfKey(t.eventKey)])return true; // couldn't read that calendar this sync — leave alone
       const ev=evByKey[t.eventKey];
-      if(!ev){delete S.calSeen[t.eventKey];removed++;return false} // event deleted (or left the week)
+      if(!ev){delete S.calSeen[t.eventKey];entomb(t.id);removed++;return false} // event deleted (or left the week)
       if(!t.calTitle)t.calTitle=t.title.replace(/\s*\([^()]*\)\s*$/,'');
       if(t.calRawTitle==null)t.calRawTitle=ev.title;
       const newTime=ev.time||null;
-      if(ev.date!==t.date||newTime!==t.time)updated++;
+      if(ev.date!==t.date||newTime!==t.time){updated++;touch(t)}
       t.date=ev.date;
       t.time=newTime;
       t.timeOfDay=ev.time?todFromTime(ev.time):null;
@@ -1397,11 +1406,11 @@ function syncCalendar(manual){
           S.calSeen[e.key]={d:e.date};
           if(v.task){
             const calTitle=v.title||e.title;
-            S.tasks.push({id:uid(),title:calTitle,
+            S.tasks.push({id:'cal@'+e.key,title:calTitle,
               date:e.date,tags:['calendar'].concat(cleanTags(v.tags)),subtasks:[],done:false,
               timeOfDay:e.time?todFromTime(e.time):null,time:e.time||null,
               createdAt:Date.now(),recurringId:null,
-              eventKey:e.key,calTitle:calTitle,calRawTitle:e.title,calTagged:1});
+              eventKey:e.key,calTitle:calTitle,calRawTitle:e.title,calTagged:1,u:Date.now()});
             added++;
           }
         }else if(item.kind==='rename'){ // renamed event — refresh or retire its task
@@ -1412,8 +1421,9 @@ function syncCalendar(manual){
             t.calTitle=v.title||e.title;
             t.title=t.calTitle;
             cleanTags(v.tags).forEach(function(g){if(t.tags.indexOf(g)<0)t.tags.push(g)});
-            updated++;
+            touch(t);updated++;
           }else{
+            entomb(t.id);
             S.tasks=S.tasks.filter(function(x){return x!==t});
             S.calSeen[e.key]={d:e.date};
             removed++;
@@ -1434,6 +1444,147 @@ function syncCalendar(manual){
     if(e&&e.stack)detail+=' @ '+String(e.stack).replace(/\s+/g,' ').slice(0,220);
     noteError('Failed while '+stage+' — '+detail);
     if(manual)toast('Sync failed while '+stage+' (details in Settings)');
+  });
+}
+
+
+/* ---------- device sync (Supabase) ---------- */
+const SYNCKEY='this-week-sync';
+function syncCfg(){try{return JSON.parse(localStorage.getItem(SYNCKEY))||{}}catch(e){return{}}}
+function saveSyncCfg(c){try{localStorage.setItem(SYNCKEY,JSON.stringify(c))}catch(e){}}
+let sb=null,sbUser=null,pushTimer=null,sbLoading=null;
+
+function syncPayload(){
+  return {tasks:S.tasks,recurring:S.recurring,moods:S.moods,habits:S.habits,habitsU:S.habitsU||0,
+    habitLog:S.habitLog,archive:S.archive,calSeen:S.calSeen||{},deleted:S.deleted,logU:S.logU};
+}
+function mergeState(remote){ /* returns true if local S changed */
+  if(!remote)return false;
+  const before=JSON.stringify(syncPayload());
+  const rdel=remote.deleted||{};
+  function mergeList(localList,remoteList){
+    const map={};
+    (localList||[]).forEach(function(t){map[t.id]=t});
+    (remoteList||[]).forEach(function(rt){
+      if(!rt||!rt.id)return;
+      if(S.deleted[rt.id]&&S.deleted[rt.id]>=(rt.u||0))return;
+      const lt=map[rt.id];
+      if(!lt||((rt.u||0)>(lt.u||0)))map[rt.id]=rt;
+    });
+    Object.keys(map).forEach(function(id){
+      if(rdel[id]&&rdel[id]>=(map[id].u||0))delete map[id];
+    });
+    return Object.keys(map).map(function(k){return map[k]});
+  }
+  S.tasks=mergeList(S.tasks,remote.tasks);
+  S.recurring=mergeList(S.recurring,remote.recurring);
+  Object.keys(rdel).forEach(function(id){S.deleted[id]=Math.max(S.deleted[id]||0,rdel[id])});
+  if((remote.habitsU||0)>(S.habitsU||0)){S.habits=(remote.habits||[]);S.habitsU=remote.habitsU}
+  const rlu=remote.logU||{};
+  Object.keys(rlu).forEach(function(k){
+    if(rlu[k]>(S.logU[k]||0)){
+      S.logU[k]=rlu[k];
+      const date=k.slice(2);
+      if(k[0]==='m'){
+        const v=(remote.moods||{})[date];
+        if(v&&v.length)S.moods[date]=v;else delete S.moods[date];
+      }else{
+        const v=(remote.habitLog||{})[date];
+        if(v&&v.length)S.habitLog[date]=v;else delete S.habitLog[date];
+      }
+    }
+  });
+  Object.keys(remote.moods||{}).forEach(function(d){if(!S.moods[d]&&!S.logU['m:'+d])S.moods[d]=remote.moods[d]});
+  Object.keys(remote.habitLog||{}).forEach(function(d){if(!S.habitLog[d]&&!S.logU['h:'+d])S.habitLog[d]=remote.habitLog[d]});
+  Object.keys(remote.archive||{}).forEach(function(d){
+    const loc=S.archive[d]||[];
+    (remote.archive[d]||[]).forEach(function(e){
+      if(!loc.some(function(x){return x.title===e.title&&x.done===e.done}))loc.push(e);
+    });
+    S.archive[d]=loc;
+  });
+  if(!S.calSeen)S.calSeen={};
+  Object.keys(remote.calSeen||{}).forEach(function(k){if(!S.calSeen[k])S.calSeen[k]=remote.calSeen[k]});
+  return JSON.stringify(syncPayload())!==before;
+}
+
+function loadSb(){
+  if(window.supabase)return Promise.resolve();
+  if(sbLoading)return sbLoading;
+  sbLoading=new Promise(function(res,rej){
+    const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+    s.onload=res;
+    s.onerror=function(){sbLoading=null;rej(new Error('couldn’t load the sync library — this works on the hosted app'))};
+    document.head.appendChild(s);
+  });
+  return sbLoading;
+}
+function sbClient(){
+  const c=syncCfg();
+  if(!c.url||!c.anon||!window.supabase)return null;
+  if(!sb)sb=window.supabase.createClient(c.url,c.anon);
+  return sb;
+}
+function startSync(){
+  const c=syncCfg();
+  if(!c.url||!c.anon)return Promise.resolve();
+  return loadSb().then(function(){
+    const cl=sbClient();if(!cl)return;
+    return cl.auth.getSession().then(function(res){
+      const session=res.data?res.data.session:null;
+      if(!session){sbUser=null;return}
+      sbUser=session.user;
+      return pullMerge(true).then(function(){
+        cl.channel('state-'+sbUser.id)
+          .on('postgres_changes',{event:'*',schema:'public',table:'app_state',filter:'user_id=eq.'+sbUser.id},
+            function(payload){
+              if(payload.new&&payload.new.data){
+                if(mergeState(payload.new.data)){save();render()}
+              }
+            })
+          .subscribe();
+      });
+    });
+  }).catch(function(){});
+}
+function pullMerge(pushAfter){
+  const cl=sbClient();
+  if(!cl||!sbUser)return Promise.resolve();
+  return cl.from('app_state').select('data').eq('user_id',sbUser.id).maybeSingle()
+    .then(function(r){
+      let changed=false;
+      if(r&&r.data&&r.data.data)changed=mergeState(r.data.data);
+      if(changed){save();render()}
+      if(pushAfter)return pushNow();
+    }).catch(function(){});
+}
+function schedulePush(){
+  if(!sbUser)return;
+  clearTimeout(pushTimer);
+  pushTimer=setTimeout(pushNow,1500);
+}
+function pushNow(){
+  const cl=sbClient();
+  if(!cl||!sbUser)return Promise.resolve();
+  return cl.from('app_state')
+    .upsert({user_id:sbUser.id,data:syncPayload(),updated_at:new Date().toISOString()})
+    .then(function(){},function(){});
+}
+function syncSignIn(email,pw){
+  return loadSb().then(function(){
+    const cl=sbClient();
+    if(!cl)throw new Error('save the project URL and key first');
+    return cl.auth.signInWithPassword({email:email,password:pw}).then(function(r){
+      if(!r.error)return r;
+      return cl.auth.signUp({email:email,password:pw}).then(function(r2){
+        if(r2.error)throw new Error(r2.error.message);
+        return cl.auth.signInWithPassword({email:email,password:pw}).then(function(r3){
+          if(r3.error)throw new Error(r3.error.message+' (if it mentions confirmation, turn off “Confirm email” in Supabase Auth settings)');
+          return r3;
+        });
+      });
+    });
   });
 }
 
@@ -1474,19 +1625,19 @@ function settingsPage(){
     e.preventDefault();
     const v=habInp.value.trim().toLowerCase();
     if(!v)return;
-    if(habitNames().indexOf(v)<0){S.habits.push({name:v,per:+habPer.value||7});save()}
+    if(habitNames().indexOf(v)<0){S.habits.push({name:v,per:+habPer.value||7});S.habitsU=Date.now();save()}
     showSettings();
   }},habInp);
   const habSec=h('div',{class:'set-sec'},
     h('label',null,'Habits'),
     S.habits.map(function(hb){
       const rowSel=h('select',{'aria-label':'Frequency for '+hb.name,
-        onchange:function(){hb.per=+rowSel.value||7;save()}},perOptions(hb.per||7));
+        onchange:function(){hb.per=+rowSel.value||7;S.habitsU=Date.now();save()}},perOptions(hb.per||7));
       return h('div',{class:'acct-row'},
         h('span',{class:'em'},hb.name),
         rowSel,
         h('button',{class:'xbtn','aria-label':'Remove habit '+hb.name,
-          onclick:function(){S.habits=S.habits.filter(function(x){return x!==hb});save();showSettings()}},'×'));
+          onclick:function(){S.habits=S.habits.filter(function(x){return x!==hb});S.habitsU=Date.now();save();showSettings()}},'×'));
     }),
     h('div',{style:'display:flex;gap:8px;align-items:center'},habForm,habPer),
     h('p',{class:'set-note'},'Shown on Today as tappable chips. Weekly-target habits count Mon–Sun and streak by weeks hit, so rest days don’t break anything. History is kept forever.'));
@@ -1527,6 +1678,39 @@ function settingsPage(){
         ?('Last synced '+new Date(g.lastSync).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'. Claude decides which events need doing; birthdays and FYIs are skipped.')
         :'Events from the next 7 days become tasks when Claude judges they need doing — birthdays and FYIs are skipped. Works on the hosted app.'));
 
+  const sc=syncCfg();
+  const urlInp=h('input',{type:'text',autocomplete:'off',spellcheck:'false',
+    placeholder:sc.url?'Project URL saved':'https://xxxx.supabase.co','aria-label':'Supabase URL',
+    onchange:function(){const v=urlInp.value.trim();if(!v)return;
+      const c=syncCfg();c.url=v.replace(/\/+$/,'');saveSyncCfg(c);sb=null;
+      urlInp.value='';urlInp.placeholder='Project URL saved';toast('Saved')}});
+  const anonInp=h('input',{type:'text',autocomplete:'off',spellcheck:'false',
+    placeholder:sc.anon?'Anon key saved':'anon public key','aria-label':'Supabase anon key',
+    onchange:function(){const v=anonInp.value.trim();if(!v)return;
+      const c=syncCfg();c.anon=v;saveSyncCfg(c);sb=null;
+      anonInp.value='';anonInp.placeholder='Anon key saved';toast('Saved')}});
+  const emailInp=h('input',{type:'text',autocomplete:'off',placeholder:'email','aria-label':'Sync email'});
+  const pwInp=h('input',{type:'password',autocomplete:'off',placeholder:'password','aria-label':'Sync password'});
+  const syncSec=h('div',{class:'set-sec'},
+    h('label',null,'Sync across devices'),
+    sbUser
+      ?[h('div',{class:'acct-row'},
+          h('span',{class:'em'},sbUser.email||'(signed in)'),
+          h('button',{class:'xbtn','aria-label':'Sign out of sync',
+            onclick:function(){const cl=sbClient();if(cl)cl.auth.signOut();sbUser=null;toast('Sync off on this device');render()}},'×')),
+        h('p',{class:'set-note'},'Live sync is on. Changes flow between your signed-in devices within seconds.')]
+      :[urlInp,anonInp,emailInp,pwInp,
+        h('button',{class:'btn sm',onclick:function(){
+          const em=emailInp.value.trim(),pw=pwInp.value;
+          if(!em||!pw){toast('Enter an email and password');return}
+          syncSignIn(em,pw).then(function(){
+            toast('Sync is on');
+            return startSync();
+          }).then(function(){render()})
+            .catch(function(e){toast('Sign-in didn’t work: '+e.message)});
+        }},'Turn on sync'),
+        h('p',{class:'set-note'},'Uses your own free Supabase project. Same email + password on each device. Works on the hosted app.')]);
+
   const exTa=h('textarea',{class:'short',readonly:true,'aria-label':'Exported tasks'});
   const exSec=h('div',{class:'set-sec'},
     h('label',null,'Export tasks'),
@@ -1557,7 +1741,7 @@ function settingsPage(){
     h('div',{style:'display:flex;align-items:baseline'},
       h('h2',{style:'font-size:20px;font-weight:500;letter-spacing:-.01em;margin:0 0 10px'},'Settings'),
       h('button',{class:'tbtn',style:'margin-left:auto',onclick:closeSettings},'‹ Back')),
-    keySec,habSec,calSec,exSec,imSec);
+    keySec,habSec,calSec,syncSec,exSec,imSec);
 }
 
 /* ---------- catch-up modal ---------- */
@@ -1600,7 +1784,7 @@ function autoSyncIfDue(){
   }
 }
 document.addEventListener('visibilitychange',function(){
-  if(!document.hidden){ensureDay();render();autoSyncIfDue()}
+  if(!document.hidden){ensureDay();render();autoSyncIfDue();if(sbUser)pullMerge(false);else startSync()}
 });
 ensureDay();
 render();
@@ -1608,6 +1792,7 @@ render();
    silent token refresh may fail without a user gesture — that's fine,
    manual Sync now (or the reconnect button) still works */
 autoSyncIfDue();
+startSync();
 if(gcal().accounts.length)loadGsi().catch(function(){}); // preload so tap-time renewal keeps its gesture
 })();
 </script>
