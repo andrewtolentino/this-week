@@ -241,8 +241,9 @@
   .set-sec input[type=password],.set-sec input[type=text]{width:100%;height:41px;font:inherit;font-size:16px;
     color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;
     padding:8px 10px;margin-bottom:8px}
-  .set-sec select{height:41px;font:inherit;font-size:14px;color:var(--ink);background:var(--bg);
-    border:1px solid var(--line);border-radius:8px;padding:6px 8px;flex:none}
+  .set-sec select{-webkit-appearance:none;appearance:none;height:41px;font:inherit;font-size:14px;
+    color:var(--ink);background:var(--bg) url("data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='10'%20height='6'%3E%3Cpath%20d='M1%201l4%204%204-4'%20fill='none'%20stroke='%238B8577'%20stroke-width='1.5'%20stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 10px center;
+    border:1px solid var(--line);border-radius:8px;padding:6px 28px 6px 10px;flex:none}
   .set-note{font-size:12.5px;color:var(--muted);line-height:1.5;margin:6px 0 0}
   .btn.sm{width:auto;padding:7px 14px;font-size:13.5px;margin-bottom:0}
   .acct-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
@@ -1087,98 +1088,63 @@ function gcal(){
 }
 function saveGcal(g){try{localStorage.setItem(GCALKEY,JSON.stringify(g))}catch(e){}}
 
-let gsiLoading=null;
-function loadGsi(){
-  if(window.google&&window.google.accounts)return Promise.resolve();
-  if(gsiLoading)return gsiLoading;
-  gsiLoading=new Promise(function(res,rej){
-    const s=document.createElement('script');
-    s.src='https://accounts.google.com/gsi/client';
-    s.onload=res;
-    s.onerror=function(){gsiLoading=null;rej(new Error('couldn’t load Google sign-in — this only works on the hosted app'))};
-    document.head.appendChild(s);
-  });
-  return gsiLoading;
-}
-
 const GSCOPE='https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/userinfo.email';
-function requestToken(opts){
-  return loadGsi().then(function(){
-    return new Promise(function(res,rej){
-      const tc=window.google.accounts.oauth2.initTokenClient({
-        client_id:gcal().clientId,
-        scope:GSCOPE,
-        callback:function(resp){
-          if(resp&&resp.access_token)res(resp);
-          else rej(new Error((resp&&resp.error)||'no token returned'));
-        },
-        error_callback:function(e){rej(new Error((e&&e.type)||'sign-in failed'))}
-      });
-      tc.requestAccessToken(
-        opts.silent?{prompt:'',login_hint:opts.hint||''}
-        :opts.reconnect?{login_hint:opts.hint||''}
-        :{prompt:'select_account'});
-    });
+function gcalRedirectUri(){return location.origin+location.pathname.replace(/index\.html$/,'')}
+function brokerCall(body){
+  const cl=sbClient();
+  if(!cl||!sbUser)return Promise.reject(new Error('turn on sync first (Settings)'));
+  return cl.functions.invoke('gcal-broker',{body:body}).then(function(r){
+    if(r.error){
+      if(r.error.context&&r.error.context.json){
+        return r.error.context.json().catch(function(){return{}}).then(function(jd){
+          throw new Error(jd.error||r.error.message||'broker error');
+        });
+      }
+      throw new Error(r.error.message||'broker error');
+    }
+    if(r.data&&r.data.error)throw new Error(r.data.error);
+    return r.data;
   });
 }
 function freshToken(acc){
   if(acc.token&&Date.now()<acc.expiry)return Promise.resolve(acc.token);
-  return requestToken({silent:true,hint:acc.email}).then(function(resp){
-    acc.token=resp.access_token;
-    acc.expiry=Date.now()+(((resp.expires_in||3600)-60)*1000);
+  return brokerCall({action:'token',email:acc.email}).then(function(d){
+    acc.token=d.access_token;
+    acc.expiry=Date.now()+(((d.expires_in||3600)-60)*1000);
     acc.needsReauth=false;
     const g=gcal();
     const i=g.accounts.findIndex(function(a){return a.email===acc.email});
     if(i>=0){g.accounts[i]=acc;saveGcal(g)}
     return acc.token;
-  }).catch(function(){
+  }).catch(function(e){
     const g=gcal();
     const a=g.accounts.find(function(x){return x.email===acc.email});
     if(a){a.needsReauth=true;saveGcal(g)}
-    throw new Error('session expired — tap Sync now to renew');
+    throw new Error(e&&e.message?e.message:'needs a re-connect');
   });
 }
 function reconnectAccount(email){
-  requestToken({reconnect:true,hint:email}).then(function(resp){
-    const g=gcal();
-    const a=g.accounts.find(function(x){return x.email===email});
-    if(a){
-      a.token=resp.access_token;
-      a.expiry=Date.now()+(((resp.expires_in||3600)-60)*1000);
-      a.needsReauth=false;
-      saveGcal(g);
-    }
-    toast('Reconnected '+email);
-    showSettings();
-    syncCalendar(true);
-  }).catch(function(e){toast('Reconnect didn’t finish: '+e.message)});
+  connectGoogleAccount(email);
 }
-function connectGoogleAccount(){
+function connectGoogleAccount(hint){
   const g=gcal();
   if(!g.clientId){toast('Paste your Google Client ID first');return}
-  requestToken({silent:false}).then(function(resp){
-    return fetch('https://www.googleapis.com/oauth2/v3/userinfo',
-      {headers:{Authorization:'Bearer '+resp.access_token}})
-      .then(function(r){return r.json()})
-      .then(function(u){
-        const g2=gcal();
-        const acc={email:u.email||'(unknown)',token:resp.access_token,
-          expiry:Date.now()+(((resp.expires_in||3600)-60)*1000)};
-        const i=g2.accounts.findIndex(function(a){return a.email===acc.email});
-        if(i>=0)g2.accounts[i]=acc;else g2.accounts.push(acc);
-        saveGcal(g2);
-        toast('Connected '+acc.email);
-        showSettings();
-        syncCalendar(true);
-      });
-  }).catch(function(e){toast('Google sign-in didn’t finish: '+e.message)});
+  if(!sbUser){toast('Turn on sync first — the permanent connection lives in your Supabase');return}
+  const params=new URLSearchParams({
+    client_id:g.clientId,
+    response_type:'code',
+    redirect_uri:gcalRedirectUri(),
+    scope:GSCOPE,
+    access_type:'offline',
+    prompt:'consent'
+  });
+  if(hint&&typeof hint==='string')params.set('login_hint',hint);
+  else params.set('prompt','consent select_account');
+  location.href='https://accounts.google.com/o/oauth2/v2/auth?'+params.toString();
 }
 function disconnectGoogleAccount(email){
+  brokerCall({action:'remove',email:email}).catch(function(){});
   const g=gcal();
-  const acc=g.accounts.find(function(a){return a.email===email});
-  if(acc&&acc.token&&window.google&&window.google.accounts){
-    try{window.google.accounts.oauth2.revoke(acc.token,function(){})}catch(e){}
-  }
   g.accounts=g.accounts.filter(function(a){return a.email!==email});
   saveGcal(g);
   toast('Disconnected '+email);
@@ -1290,35 +1256,6 @@ function syncCalendar(manual){
   const g=gcal();
   if(!g.clientId||!g.accounts.length){if(manual)toast('Connect a Google account in Settings first');return}
   if(!getApiKey()){if(manual)toast('Add your Claude API key first — it decides what’s a task');return}
-  if(manual){
-    /* renew an expired Google pass inside this tap — iOS only allows the
-       renewal popup during a user gesture (and one popup per tap) */
-    const expired=g.accounts.filter(function(a){return !(a.token&&Date.now()<a.expiry)});
-    if(expired.length){
-      const acc=expired[0];
-      calSyncing=true;
-      requestToken({reconnect:true,hint:acc.email}).then(function(resp){
-        const g2=gcal();
-        const a=g2.accounts.find(function(x){return x.email===acc.email});
-        if(a){
-          a.token=resp.access_token;
-          a.expiry=Date.now()+(((resp.expires_in||3600)-60)*1000);
-          a.needsReauth=false;
-          saveGcal(g2);
-        }
-        calSyncing=false;
-        if(expired.length>1){
-          toast('Renewed '+acc.email+' — tap Sync now once more for '+expired[1].email);
-          return;
-        }
-        syncCalendar(true);
-      }).catch(function(e){
-        calSyncing=false;
-        toast('Google renewal didn’t finish: '+e.message);
-      });
-      return;
-    }
-  }
   calSyncing=true;
   if(manual)toast('Syncing your calendars…');
   let stage='reading your calendars';
@@ -1612,7 +1549,7 @@ function settingsPage(){
         render();toast('Key removed');
       }},'Remove key'):null
     ),
-    h('p',{class:'set-note'},'Stored only in this browser, sent only to Anthropic. Powers the ✦ check-in.'));
+    h('p',{class:'set-note'},'Stored only in this browser, sent only to Anthropic. Powers the brain dump and calendar sorting.'));
 
   function perOptions(sel){
     return [7,6,5,4,3,2,1].map(function(n){
@@ -1676,7 +1613,7 @@ function settingsPage(){
     h('p',{class:'set-note'},
       g.lastSync
         ?('Last synced '+new Date(g.lastSync).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'. Claude decides which events need doing; birthdays and FYIs are skipped.')
-        :'Events from the next 7 days become tasks when Claude judges they need doing — birthdays and FYIs are skipped. Works on the hosted app.'));
+        :'Connect each Google account once — the permanent connection lives in your Supabase, no repeat logins. Turn on sync first. Works on the hosted app.'));
 
   const sc=syncCfg();
   const urlInp=h('input',{type:'text',autocomplete:'off',spellcheck:'false',
@@ -1792,7 +1729,35 @@ render();
    silent token refresh may fail without a user gesture — that's fine,
    manual Sync now (or the reconnect button) still works */
 autoSyncIfDue();
-startSync();
-if(gcal().accounts.length)loadGsi().catch(function(){}); // preload so tap-time renewal keeps its gesture
+const oauthCode=(function(){
+  const m=location.search.match(/[?&]code=([^&]+)/);
+  if(!m)return null;
+  try{history.replaceState(null,'',location.pathname)}catch(e){}
+  return decodeURIComponent(m[1]);
+})();
+startSync().then(function(){
+  if(oauthCode&&sbUser){
+    brokerCall({action:'exchange',code:oauthCode,redirect_uri:gcalRedirectUri()}).then(function(d){
+      const g=gcal();
+      const acc={email:d.email,token:d.access_token,expiry:Date.now()+(((d.expires_in||3600)-60)*1000),needsReauth:false};
+      const i=g.accounts.findIndex(function(a){return a.email===acc.email});
+      if(i>=0)g.accounts[i]=acc;else g.accounts.push(acc);
+      saveGcal(g);
+      toast('Connected '+d.email+' — no more logins needed');
+      render();
+      syncCalendar(true);
+    }).catch(function(e){toast('Google connect didn’t finish: '+e.message)});
+  }else if(oauthCode){
+    toast('Turn on sync first, then connect Google again');
+  }else if(sbUser){
+    brokerCall({action:'list'}).then(function(d){
+      const g=gcal();let added=0;
+      (d.emails||[]).forEach(function(em){
+        if(!g.accounts.some(function(a){return a.email===em})){g.accounts.push({email:em,token:null,expiry:0});added++}
+      });
+      if(added){saveGcal(g);render()}
+    }).catch(function(){});
+  }
+});
 })();
 </script>
