@@ -1716,7 +1716,7 @@ document.addEventListener('pointerdown',function(e){
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&openId){openId=null;render()}});
 function autoSyncIfDue(){
   const g=gcal();
-  if(g.clientId&&g.accounts.length&&getApiKey()&&Date.now()-g.lastSync>6*3600*1000){
+  if(g.clientId&&g.accounts.length&&getApiKey()&&Date.now()-g.lastSync>3600*1000){
     setTimeout(function(){syncCalendar(false)},800);
   }
 }
