@@ -127,6 +127,18 @@
   .mood-row .m{font:inherit;font-size:12.5px;color:var(--muted);background:var(--bg);
     border:1px solid var(--line);border-radius:99px;padding:3px 11px;cursor:pointer}
   .mood-row .m.on{background:var(--accent-soft);border-color:var(--accent);color:var(--ink)}
+  .streak{color:var(--faint);font-size:11px;margin-left:5px}
+
+  /* ---------- past view ---------- */
+  .past-sub{font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--muted);margin:10px 0 4px}
+  .past-item{display:flex;gap:10px;align-items:baseline;padding:3px 0;font-size:14.5px}
+  .past-item .pm{color:var(--accent);font-size:12px;flex:none}
+  .past-item.done .pt{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--faint)}
+
+  /* ---------- brain dump ---------- */
+  .bd-list{display:flex;flex-direction:column;gap:5px;margin:0 0 14px}
+  .bd-item{font-size:14px;color:var(--ink)}
+  .bd-item .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-right:8px}
 
   /* ---------- tasks ---------- */
   .task{border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
@@ -214,10 +226,10 @@
   .modal .btn{width:100%;margin-bottom:8px}
   .modal .ghost{width:100%;background:none;color:var(--ink);border:1px solid var(--line);
     font:inherit;font-size:14px;border-radius:9px;padding:8px 16px;cursor:pointer}
-  .modal textarea{width:100%;height:180px;resize:none;font-family:var(--mono);font-size:12px;
+  .modal textarea,.set-sec textarea{width:100%;height:180px;resize:none;font-family:var(--mono);font-size:12px;
     color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;
     padding:10px;margin-bottom:14px;line-height:1.5}
-  .modal textarea.short{height:90px;margin-bottom:8px}
+  .modal textarea.short,.set-sec textarea.short{height:90px;margin-bottom:8px}
   .summary{font-size:14.5px;line-height:1.65;color:var(--ink);white-space:pre-wrap;margin-bottom:16px}
   .meta-row{display:flex;align-items:center;gap:14px;margin:-6px 0 14px}
   .meta-row .stamp{font-family:var(--mono);font-size:11px;color:var(--faint)}
@@ -226,9 +238,11 @@
   .set-sec{margin-bottom:18px}
   .set-sec label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;
     text-transform:uppercase;color:var(--muted);margin-bottom:6px}
-  .set-sec input[type=password],.set-sec input[type=text]{width:100%;font:inherit;font-size:16px;
+  .set-sec input[type=password],.set-sec input[type=text]{width:100%;height:41px;font:inherit;font-size:16px;
     color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;
     padding:8px 10px;margin-bottom:8px}
+  .set-sec select{height:41px;font:inherit;font-size:14px;color:var(--ink);background:var(--bg);
+    border:1px solid var(--line);border-radius:8px;padding:6px 8px;flex:none}
   .set-note{font-size:12.5px;color:var(--muted);line-height:1.5;margin:6px 0 0}
   .btn.sm{width:auto;padding:7px 14px;font-size:13.5px;margin-bottom:0}
   .acct-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
@@ -248,7 +262,7 @@
     <div class="head-row">
       <h1>This Week</h1>
       <div class="range" id="range"></div>
-      <button class="ai-btn" id="aiBtn" aria-label="AI check-in" title="AI check-in">✦<span class="lbl"> Check-in</span></button>
+      <button class="ai-btn" id="dumpBtn" aria-label="Brain dump" title="Brain dump">✎<span class="lbl"> Brain dump</span></button>
     </div>
     <div class="week-progress" id="wprog"></div>
     <div class="week-bar"><i id="wbar" style="width:0"></i></div>
@@ -269,7 +283,7 @@ const DSHORT=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const TODS=['morning','afternoon','evening'];
 const TODLBL={morning:'Morning',afternoon:'Afternoon',evening:'Evening'};
-const VIEWS=[['days','Days'],['time','Time of day'],['tag','Tags'],['flat','One list']];
+const VIEWS=[['days','Days'],['time','Time of day'],['tag','Tags'],['flat','One list'],['past','Past']];
 
 /* ---------- state ---------- */
 let S=load();
@@ -277,6 +291,7 @@ let openId=null;        // task id with editor open
 let subAddId=null;      // task id with quick subtask input open
 let addingKey='none';   // window index 0-6, null (anytime), or 'none'
 let pendingRollover=null;
+let settingsOpen=false;
 let confirmArm=null;
 
 function migrate(s){
@@ -291,13 +306,20 @@ function migrate(s){
   s.version=2;
   return s;
 }
+function defaults(s){
+  s.tasks=s.tasks||[];s.recurring=s.recurring||[];
+  s.moods=s.moods||{};s.habits=s.habits||[];s.habitLog=s.habitLog||{};s.archive=s.archive||{};
+  s.habits=s.habits.map(function(x){return typeof x==='string'?{name:x,per:7}:x}); // v1 habits were plain names
+  return s;
+}
+function habitNames(){return S.habits.map(function(x){return x.name})}
 function load(){
   try{const raw=localStorage.getItem(KEY);if(raw){
     const s=migrate(JSON.parse(raw));
     if(s.view==='added')s.view='days';
-    return s;
+    return defaults(s);
   }}catch(e){}
-  return {version:2,tasks:[],recurring:[],view:'days'};
+  return defaults({version:2,tasks:[],recurring:[],view:'days'});
 }
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
@@ -329,6 +351,25 @@ function seedRecurring(){
     }
   }
 }
+function archivePast(){ /* snapshot outgoing past tasks so the Past view can show them */
+  const t0=iso(today0());
+  if(!S.archive)S.archive={};
+  S.tasks.forEach(function(t){
+    if(t.date&&t.date<t0){
+      (S.archive[t.date]=S.archive[t.date]||[]).push({title:t.title,done:!!t.done,tags:(t.tags||[]).slice()});
+    }
+  });
+}
+function archiveDone(){ /* snapshot done tasks before a manual clear */
+  const t0=iso(today0());
+  if(!S.archive)S.archive={};
+  S.tasks.forEach(function(t){
+    if(t.done){
+      const d=t.date||t0;
+      (S.archive[d]=S.archive[d]||[]).push({title:t.title,done:true,tags:(t.tags||[]).slice()});
+    }
+  });
+}
 function ensureDay(){
   const t0=iso(today0());
   const past=S.tasks.filter(t=>t.date&&t.date<t0);
@@ -337,6 +378,7 @@ function ensureDay(){
     pendingRollover={count:movable.length,done:past.filter(t=>t.done).length,total:past.length};
     return;
   }
+  archivePast();
   S.tasks=S.tasks.filter(t=>!(t.date&&t.date<t0));
   seedRecurring();save();
   if(past.length&&past.every(t=>t.done)){
@@ -347,6 +389,7 @@ function resolveRollover(move){
   const t0=iso(today0());
   const n=pendingRollover?pendingRollover.count:0;
   if(move)for(const t of S.tasks){if(t.date&&t.date<t0&&!t.done&&!t.recurringId){t.date=t0;t.carried=(t.carried||0)+1}}
+  archivePast();
   S.tasks=S.tasks.filter(t=>!(t.date&&t.date<t0));
   seedRecurring();pendingRollover=null;save();render();
   toast(move
@@ -446,9 +489,18 @@ function render(){
   app.textContent='';
   if(pendingRollover){renderModal();return}
   document.getElementById('modalRoot').textContent='';
+  const viewsEl=document.getElementById('views'),stripEl=document.getElementById('strip');
+  if(settingsOpen){
+    viewsEl.style.display='none';stripEl.style.display='none';
+    app.append(settingsPage());
+    renderFoot();
+    return;
+  }
+  viewsEl.style.display='';stripEl.style.display='';
   if(S.view==='days')renderDays(false);
   else if(S.view==='time')renderDays(true);
   else if(S.view==='tag')renderTags();
+  else if(S.view==='past')renderPast();
   else renderFlat();
   renderFoot();
   if(!S.tasks.length&&S.view==='days'){
@@ -486,6 +538,54 @@ function renderStrip(){
 }
 
 const MOODS=['happy','calm','motivated','meh','tired','exhausted','stressed','sad'];
+function dayStreak(name){
+  let n=0;const t0=today0();
+  for(let i=0;i<365;i++){
+    const ds=iso(addDays(t0,-i));
+    if((S.habitLog[ds]||[]).indexOf(name)>=0)n++;
+    else if(i===0)continue; /* today unchecked doesn't break a streak yet */
+    else break;
+  }
+  return n;
+}
+function mondayOf(d){const x=new Date(d.getFullYear(),d.getMonth(),d.getDate());x.setDate(x.getDate()-wdIdx(x));return x}
+function weekCount(name,mon){
+  let n=0;
+  for(let i=0;i<7;i++){if((S.habitLog[iso(addDays(mon,i))]||[]).indexOf(name)>=0)n++}
+  return n;
+}
+function habitRow(){
+  const t0=iso(today0());
+  const cur=S.habitLog[t0]||[];
+  const row=h('div',{class:'mood-row'});
+  S.habits.forEach(function(hb){
+    const name=hb.name,per=hb.per||7;
+    const on=cur.indexOf(name)>=0;
+    let extra='';
+    if(per>=7){
+      const st=dayStreak(name);
+      if(st>1)extra='·'+st;
+    }else{
+      /* weekly target: progress this Mon–Sun week + streak of weeks that hit it */
+      const mon=mondayOf(today0());
+      const wc=weekCount(name,mon);
+      extra=wc+'/'+per;
+      let ws=(wc>=per)?1:0;
+      for(let k=1;k<104;k++){
+        if(weekCount(name,addDays(mon,-7*k))>=per)ws++;else break;
+      }
+      if(ws>1)extra+=' ·'+ws+'w';
+    }
+    row.append(h('button',{class:'m'+(on?' on':''),onclick:function(){
+      const list=S.habitLog[t0]||[];
+      const i=list.indexOf(name);
+      if(i>=0)list.splice(i,1);else list.push(name);
+      if(list.length)S.habitLog[t0]=list;else delete S.habitLog[t0];
+      save();render();
+    }},name,extra?h('span',{class:'streak'},extra):null));
+  });
+  return row;
+}
 function moodRow(){
   const t0=iso(today0());
   if(!S.moods)S.moods={};
@@ -513,6 +613,7 @@ function daySection(key,name,dateLbl,tasks,grouped,isToday){
   ));
   if(isToday){
     sec.append(h('div',{class:'mood-label'},'How I’m feeling'),moodRow());
+    if(S.habits.length)sec.append(h('div',{class:'mood-label'},'Habits'),habitRow());
   }
   if(grouped&&tasks.length){
     const groups=[['morning'],['afternoon'],['evening'],[null]];
@@ -585,6 +686,39 @@ function renderFlat(){
   list.forEach(t=>sec.append(taskEl(t,{showDay:true})));
   if(!list.length)sec.append(h('p',{class:'empty-week',style:'margin:14px 0'},'Nothing here yet.'));
   app.append(sec);
+}
+
+function renderPast(){
+  const t0=today0();
+  let shown=0;
+  for(let i=1;i<=90;i++){
+    const d=addDays(t0,-i);const ds=iso(d);
+    const tasks=(S.archive[ds]||[]);
+    const moods=(S.moods[ds]||[]);
+    const habits=(S.habitLog[ds]||[]);
+    if(!tasks.length&&!moods.length&&!habits.length)continue;
+    shown++;
+    const sec=h('section',{class:'day'});
+    const doneN=tasks.filter(function(t){return t.done}).length;
+    sec.append(h('div',{class:'day-head'},
+      h('span',{class:'day-name'},i===1?'Yesterday':DAYS[wdIdx(d)]),
+      h('span',{class:'day-date'},fmtDayDate(d)),
+      tasks.length?h('span',{class:'day-count'},doneN+'/'+tasks.length):null));
+    if(moods.length||habits.length){
+      const bits=[];
+      if(moods.length)bits.push('felt '+moods.join(', '));
+      if(habits.length)bits.push('habits ✓ '+habits.join(', '));
+      sec.append(h('div',{class:'past-sub'},bits.join(' · ')));
+    }
+    tasks.forEach(function(t){
+      sec.append(h('div',{class:'past-item'+(t.done?' done':'')},
+        h('span',{class:'pm'},t.done?'✓':'○'),
+        h('span',{class:'pt'},t.title)));
+    });
+    sec.append(h('div',{style:'height:10px'}));
+    app.append(sec);
+  }
+  if(!shown)app.append(h('p',{class:'empty-week'},'Nothing here yet — days collect as they pass.'));
 }
 
 /* ---------- task element ---------- */
@@ -789,57 +923,14 @@ function renderFoot(){
   foot.append(
     h('span',null,'·'),
     fbtn('done','Clear completed','Sure? Tap again',function(){
-      S.tasks=S.tasks.filter(t=>!t.done);save();render()}),
+      archiveDone();S.tasks=S.tasks.filter(t=>!t.done);save();render()}),
     h('span',null,'·'),
     fbtn('week','Clear everything','Really clear? Tap again',function(){
-      S.tasks=[];seedRecurring();save();render()})
+      archiveDone();S.tasks=[];seedRecurring();save();render()})
   );
 }
 
-/* ---------- AI check-in ---------- */
-function buildCheckin(){
-  const w=winDates(),t0=today0();
-  const done=S.tasks.filter(t=>t.done).length;
-  const lines=[];
-  lines.push("You're my motivational coach. I have mild ADHD. Reply in plain text, under 70 words total, no preamble, no headers. Format: one short line celebrating what's done (or a warm nudge if nothing is yet); one line naming a pattern only if there's a real one (especially tasks carried over repeatedly); then 'Focus next:' with 1–3 short lines starting with •. Direct, warm, specific.");
-  lines.push('');
-  lines.push('My week ('+fmtRange()+') — '+done+' of '+S.tasks.length+' done:');
-  const fmt=function(t){
-    const bits=[];
-    if(t.timeOfDay)bits.push(t.timeOfDay);
-    if(t.tags.length)bits.push(t.tags.map(g=>'#'+g).join(' '));
-    if(t.subtasks.length)bits.push('subtasks '+t.subtasks.filter(x=>x.done).length+'/'+t.subtasks.length+' done');
-    if(t.recurringId)bits.push('repeats weekly');
-    if(t.carried)bits.push('carried over '+t.carried+(t.carried===1?' time':' times'));
-    return (t.done?'[done] ':'[not done] ')+t.title+(bits.length?' ('+bits.join(', ')+')':'');
-  };
-  for(let i=0;i<7;i++){
-    const dayTasks=S.tasks.filter(t=>t.date===w[i]);
-    if(!dayTasks.length)continue;
-    lines.push('');
-    lines.push(winLabel(i,addDays(t0,i))+', '+fmtDayDate(addDays(t0,i))+':');
-    dayTasks.slice().sort(sortDay).forEach(t=>lines.push('- '+fmt(t)));
-  }
-  const any=S.tasks.filter(t=>t.date==null);
-  if(any.length){
-    lines.push('');lines.push('Anytime this week:');
-    any.forEach(t=>lines.push('- '+fmt(t)));
-  }
-  if(S.moods){
-    const t0d=today0();const ml=[];
-    for(let i=6;i>=0;i--){
-      const dd=addDays(t0d,-i);const ds=iso(dd);
-      if(S.moods[ds]&&S.moods[ds].length){
-        ml.push((i===0?'today':DSHORT[wdIdx(dd)])+': '+S.moods[ds].join(', '));
-      }
-    }
-    if(ml.length){
-      lines.push('');
-      lines.push('How I’ve been feeling — '+ml.join(' · ')+'. Weave this in kindly if it’s relevant.');
-    }
-  }
-  return lines.join('\n');
-}
+/* ---------- toast ---------- */
 function toast(msg){
   const old=document.querySelector('.toast');if(old)old.remove();
   const el=h('div',{class:'toast'},msg);
@@ -847,35 +938,6 @@ function toast(msg){
   requestAnimationFrame(function(){el.classList.add('show')});
   setTimeout(function(){el.classList.remove('show');setTimeout(function(){el.remove()},300)},2800);
 }
-function showCheckinModal(text){
-  const root=document.getElementById('modalRoot');root.textContent='';
-  const ta=h('textarea',{readonly:true},text);
-  root.append(h('div',{class:'overlay',onclick:function(e){if(e.target===e.currentTarget)root.textContent=''}},
-    h('div',{class:'modal',role:'dialog','aria-modal':'true'},
-      h('h2',null,'Your check-in'),
-      h('p',null,'Copy this and paste it to Claude for your summary.'),
-      ta,
-      h('button',{class:'btn',onclick:function(){
-        ta.select();
-        try{document.execCommand('copy');toast('Copied — now paste it to Claude')}catch(e){}
-      }},'Copy'),
-      h('button',{class:'ghost',onclick:function(){root.textContent=''}},'Close')
-    )));
-}
-function shareFallback(text){
-  const finish=function(){toast('Copied — paste it to Claude for your check-in')};
-  if(navigator.share){
-    navigator.share({text:text}).catch(function(e){
-      if(e&&e.name==='AbortError')return;
-      if(navigator.clipboard&&navigator.clipboard.writeText){
-        navigator.clipboard.writeText(text).then(finish,function(){showCheckinModal(text)});
-      }else showCheckinModal(text);
-    });
-  }else if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(text).then(finish,function(){showCheckinModal(text)});
-  }else showCheckinModal(text);
-}
-
 /* ---------- Claude API ---------- */
 const KEYKEY='this-week-api-key';
 function getApiKey(){
@@ -916,76 +978,96 @@ function callClaude(promptText,maxTokens){
   });
 }
 
-const CHECKKEY='this-week-checkin';
-function getCachedCheckin(){
-  try{
-    const raw=localStorage.getItem(CHECKKEY);if(!raw)return null;
-    const c=JSON.parse(raw);
-    return (c&&c.text&&c.date===iso(today0()))?c:null;
-  }catch(e){return null}
-}
-
-function openCheckinModal(){
-  const root=document.getElementById('modalRoot');root.textContent='';
-  const body=h('div',{class:'summary'});
-  const metaRow=h('div',{class:'meta-row'});
-  root.append(h('div',{class:'overlay',onclick:function(e){if(e.target===e.currentTarget)root.textContent=''}},
-    h('div',{class:'modal',role:'dialog','aria-modal':'true'},
-      h('h2',null,'✦ Your check-in'),
-      body,metaRow,
-      h('button',{class:'ghost',onclick:function(){root.textContent=''}},'Close'))));
-  return {body:body,metaRow:metaRow};
-}
-
-function showCheckinResult(ui,c){
-  ui.body.classList.remove('pulse');
-  ui.body.textContent=c.text;
-  ui.metaRow.textContent='';
-  ui.metaRow.append(
-    h('span',{class:'stamp'},'Today · '+c.at),
-    h('button',{class:'tbtn',onclick:function(){generateCheckin(ui)}},'Regenerate')
-  );
-}
-
-function generateCheckin(ui){
-  ui.metaRow.textContent='';
-  ui.body.classList.add('pulse');
-  ui.body.textContent='Reading your week…';
-  const text=buildCheckin();
-  callClaude(text).then(function(summary){
-    const c={date:iso(today0()),
-      at:new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}),
-      text:summary||'(empty response)'};
-    try{localStorage.setItem(CHECKKEY,JSON.stringify(c))}catch(e){}
-    showCheckinResult(ui,c);
-  }).catch(function(e){
-    ui.body.classList.remove('pulse');
-    ui.body.textContent='';
-    const cspLike=(e instanceof TypeError);
-    ui.body.append(
-      h('p',{style:'margin:0 0 12px;color:var(--muted);font-size:14px'},
-        cspLike
-          ?'Couldn’t reach the Claude API from this copy of the app. The claude.ai version blocks network calls — open the hosted version, or copy your check-in instead.'
-          :'Something went wrong: '+e.message),
-      h('button',{class:'tbtn',onclick:function(){
-        document.getElementById('modalRoot').textContent='';
-        shareFallback(text);
-      }},'Copy it for Claude instead')
-    );
+/* ---------- brain dump ---------- */
+function parseDump(text){
+  const t0=today0();const win=winDates();
+  const vocab={};
+  S.tasks.forEach(function(t){(t.tags||[]).forEach(function(g){if(g!=='calendar')vocab[g]=1})});
+  const vocabList=Object.keys(vocab).slice(0,30);
+  const dayList=win.map(function(ds,i){return winLabel(i,addDays(t0,i))+' = '+ds}).join(', ');
+  const clean=String(text).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]/g,' ').slice(0,4000);
+  const prompt='Sort my brain dump into structured data. Today is '+DAYS[wdIdx(t0)]+' '+iso(t0)+'. Upcoming days: '+dayList+'.\n'
+    +(S.habits.length?('My habits: '+habitNames().join(', ')+'.\n'):'')
+    +'Mood words I track: '+MOODS.join(', ')+'.\n'
+    +(vocabList.length?('Tags I use: '+vocabList.join(', ')+'.\n'):'')
+    +'Reply with ONE JSON object only, no other text: {"tasks":[{"title":"…","date":"YYYY-MM-DD or null","timeOfDay":"morning|afternoon|evening or null","tags":["…"]}],"moods":["…"],"habits":["…"]}\n'
+    +'tasks = actionable to-dos I mentioned (short cleaned-up titles; date only if I implied a day within the upcoming days, else null). moods = only my tracked mood words matching how I said I feel. habits = only habits from my list that I said I already did. Include only what I actually said.\n\nBrain dump:\n'+clean;
+  return callClaude(prompt,8192).then(function(reply){
+    const m=reply.match(/\{[\s\S]*\}/);
+    if(!m)throw new Error('couldn’t parse the reply');
+    const o=JSON.parse(m[0]);
+    return {
+      tasks:Array.isArray(o.tasks)?o.tasks.filter(function(x){return x&&x.title}):[],
+      moods:Array.isArray(o.moods)?o.moods.map(function(x){return String(x).toLowerCase()})
+        .filter(function(x){return MOODS.indexOf(x)>=0}):[],
+      habits:Array.isArray(o.habits)?o.habits.map(function(x){return String(x).toLowerCase()})
+        .filter(function(x){return habitNames().indexOf(x)>=0}):[]
+    };
   });
 }
-
-function checkin(){
-  if(!S.tasks.length){toast('Nothing to summarize yet — add a task or two first');return}
-  if(!getApiKey()){
-    toast('Tip: add your Claude API key in Settings for instant summaries');
-    shareFallback(buildCheckin());
+function applyDump(r){
+  const t0=iso(today0());const win=winDates();
+  r.tasks.forEach(function(t){
+    S.tasks.push({id:uid(),title:String(t.title).slice(0,200),
+      date:(t.date&&win.indexOf(t.date)>=0)?t.date:null,
+      tags:cleanTags(t.tags||[]),subtasks:[],done:false,
+      timeOfDay:(['morning','afternoon','evening'].indexOf(t.timeOfDay)>=0)?t.timeOfDay:null,
+      time:null,createdAt:Date.now(),recurringId:null});
+  });
+  if(r.moods.length){
+    const list=S.moods[t0]||[];
+    r.moods.forEach(function(m){if(list.indexOf(m)<0)list.push(m)});
+    S.moods[t0]=list;
+  }
+  if(r.habits.length){
+    const list=S.habitLog[t0]||[];
+    r.habits.forEach(function(hb){if(list.indexOf(hb)<0)list.push(hb)});
+    S.habitLog[t0]=list;
+  }
+  save();render();
+  toast('Sorted and added');
+}
+function renderDumpPreview(root,body,r){
+  body.textContent='';
+  if(!(r.tasks.length+r.moods.length+r.habits.length)){
+    body.append(h('p',{class:'set-note'},'Nothing actionable found — try saying it another way.'));
     return;
   }
-  const ui=openCheckinModal();
-  const cached=getCachedCheckin();
-  if(cached)showCheckinResult(ui,cached);
-  else generateCheckin(ui);
+  const list=h('div',{class:'bd-list'});
+  r.tasks.forEach(function(t){
+    const w=winDates();
+    const day=(t.date&&w.indexOf(t.date)>=0)?dayChip({date:t.date}):'This week';
+    list.append(h('div',{class:'bd-item'},h('span',{class:'k'},'task'),t.title+' — '+day));
+  });
+  if(r.moods.length)list.append(h('div',{class:'bd-item'},h('span',{class:'k'},'feeling'),r.moods.join(', ')));
+  if(r.habits.length)list.append(h('div',{class:'bd-item'},h('span',{class:'k'},'habit ✓'),r.habits.join(', ')));
+  body.append(list,
+    h('button',{class:'btn',style:'margin-bottom:8px',onclick:function(){
+      applyDump(r);root.textContent='';
+    }},'Add it all'));
+}
+function showDump(){
+  const root=document.getElementById('modalRoot');root.textContent='';
+  const ta=h('textarea',{style:'height:150px',
+    placeholder:'Talk (mic on your keyboard) or type — tasks, feelings, habits, all of it…'});
+  const body=h('div');
+  root.append(h('div',{class:'overlay',onclick:function(e){if(e.target===e.currentTarget)root.textContent=''}},
+    h('div',{class:'modal',role:'dialog','aria-modal':'true'},
+      h('h2',null,'Brain dump'),ta,body,
+      h('button',{class:'btn',style:'margin-bottom:8px',onclick:function(){
+        const text=ta.value.trim();
+        if(!text){toast('Say or type something first');return}
+        if(!getApiKey()){toast('Add your Claude API key in Settings first');return}
+        body.textContent='';
+        body.append(h('p',{class:'summary pulse',style:'margin:0 0 12px'},'Sorting it out…'));
+        parseDump(text).then(function(r){renderDumpPreview(root,body,r)})
+          .catch(function(e){
+            body.textContent='';
+            body.append(h('p',{class:'set-note',style:'color:var(--danger)'},'Couldn’t sort that: '+e.message));
+          });
+      }},'Sort it out'),
+      h('button',{class:'ghost',onclick:function(){root.textContent=''}},'Close'))));
+  ta.focus();
 }
 
 /* ---------- Google Calendar ---------- */
@@ -1356,8 +1438,9 @@ function syncCalendar(manual){
 }
 
 /* ---------- settings ---------- */
-function showSettings(){
-  const root=document.getElementById('modalRoot');root.textContent='';
+function showSettings(){settingsOpen=true;render()}
+function closeSettings(){settingsOpen=false;render()}
+function settingsPage(){
   const hasKey=!!getApiKey();
 
   const keyInp=h('input',{type:'password',placeholder:hasKey?'Key saved on this device':'sk-ant-…',
@@ -1375,10 +1458,38 @@ function showSettings(){
       }},'Save'),
       hasKey?h('button',{class:'tbtn danger',style:'margin-left:0',onclick:function(){
         try{localStorage.removeItem(KEYKEY)}catch(e){}
-        root.textContent='';toast('Key removed');
+        render();toast('Key removed');
       }},'Remove key'):null
     ),
     h('p',{class:'set-note'},'Stored only in this browser, sent only to Anthropic. Powers the ✦ check-in.'));
+
+  function perOptions(sel){
+    return [7,6,5,4,3,2,1].map(function(n){
+      return h('option',{value:String(n),selected:n===sel},n===7?'daily':n+'×/week');
+    });
+  }
+  const habInp=h('input',{type:'text',placeholder:'Add a habit…','aria-label':'New habit',style:'margin-bottom:0'});
+  const habPer=h('select',{'aria-label':'Times per week'},perOptions(7));
+  const habForm=h('form',{style:'flex:1;min-width:0',onsubmit:function(e){
+    e.preventDefault();
+    const v=habInp.value.trim().toLowerCase();
+    if(!v)return;
+    if(habitNames().indexOf(v)<0){S.habits.push({name:v,per:+habPer.value||7});save()}
+    showSettings();
+  }},habInp);
+  const habSec=h('div',{class:'set-sec'},
+    h('label',null,'Habits'),
+    S.habits.map(function(hb){
+      const rowSel=h('select',{'aria-label':'Frequency for '+hb.name,
+        onchange:function(){hb.per=+rowSel.value||7;save()}},perOptions(hb.per||7));
+      return h('div',{class:'acct-row'},
+        h('span',{class:'em'},hb.name),
+        rowSel,
+        h('button',{class:'xbtn','aria-label':'Remove habit '+hb.name,
+          onclick:function(){S.habits=S.habits.filter(function(x){return x!==hb});save();showSettings()}},'×'));
+    }),
+    h('div',{style:'display:flex;gap:8px;align-items:center'},habForm,habPer),
+    h('p',{class:'set-note'},'Shown on Today as tappable chips. Weekly-target habits count Mon–Sun and streak by weeks hit, so rest days don’t break anything. History is kept forever.'));
 
   const g=gcal();
   const cidInp=h('input',{type:'text',autocomplete:'off',spellcheck:'false',
@@ -1406,7 +1517,7 @@ function showSettings(){
       h('button',{class:'btn sm',onclick:connectGoogleAccount},
         g.accounts.length?'Connect another account':'Connect an account'),
       g.accounts.length?h('button',{class:'tbtn',onclick:function(){
-        document.getElementById('modalRoot').textContent='';
+        closeSettings();
         syncCalendar(true);
       }},'Sync now'):null
     ),
@@ -1434,19 +1545,19 @@ function showSettings(){
       try{
         const parsed=JSON.parse(imTa.value);
         if(!parsed||!Array.isArray(parsed.tasks))throw new Error('bad');
-        S=migrate(parsed);
+        S=defaults(migrate(parsed));
         if(S.view==='added')S.view='days';
-        save();root.textContent='';
+        save();settingsOpen=false;
         pendingRollover=null;ensureDay();render();
         toast('Imported '+S.tasks.length+' task'+(S.tasks.length===1?'':'s'));
       }catch(e){toast('That doesn’t look like exported data')}
     }},'Import'));
 
-  root.append(h('div',{class:'overlay',onclick:function(e){if(e.target===e.currentTarget)root.textContent=''}},
-    h('div',{class:'modal',role:'dialog','aria-modal':'true'},
-      h('h2',null,'Settings'),
-      keySec,calSec,exSec,imSec,
-      h('button',{class:'ghost',onclick:function(){root.textContent=''}},'Close'))));
+  return h('section',{class:'day',style:'margin-top:8px'},
+    h('div',{style:'display:flex;align-items:baseline'},
+      h('h2',{style:'font-size:20px;font-weight:500;letter-spacing:-.01em;margin:0 0 10px'},'Settings'),
+      h('button',{class:'tbtn',style:'margin-left:auto',onclick:closeSettings},'‹ Back')),
+    keySec,habSec,calSec,exSec,imSec);
 }
 
 /* ---------- catch-up modal ---------- */
@@ -1473,7 +1584,7 @@ function renderModal(){
   if(!/maximum-scale/.test(m.getAttribute('content')||''))
     m.setAttribute('content',m.getAttribute('content')+', maximum-scale=1');
 })();
-document.getElementById('aiBtn').addEventListener('click',checkin);
+document.getElementById('dumpBtn').addEventListener('click',showDump);
 document.addEventListener('pointerdown',function(e){
   const a=document.activeElement;
   if(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA')
