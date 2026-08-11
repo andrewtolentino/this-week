@@ -54,6 +54,7 @@
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0}
+  form{margin:0}
   html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
   button,input,select{touch-action:manipulation}
   body{
@@ -127,6 +128,10 @@
   .mood-row .m{font:inherit;font-size:12.5px;color:var(--muted);background:var(--bg);
     border:1px solid var(--line);border-radius:99px;padding:3px 11px;cursor:pointer}
   .mood-row .m.on{background:var(--accent-soft);border-color:var(--accent);color:var(--ink)}
+  .li-row{display:flex;flex-wrap:wrap;gap:4px 16px;padding-bottom:10px;
+    border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .li-item{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+  .li-item.on{color:var(--accent)}
   .streak{color:var(--faint);font-size:11px;margin-left:5px}
 
   /* ---------- past view ---------- */
@@ -595,6 +600,45 @@ function habitRow(){
   });
   return row;
 }
+function lockedInLocal(){
+  try{
+    const raw=localStorage.getItem('lockedin100');
+    if(!raw)return null;
+    const li=JSON.parse(raw);
+    const day=(li.days||{})[iso(today0())]||{};
+    const goal=li.waterGoal||16;
+    const water=day.water||0;
+    const items=[
+      {label:'food',done:!!day.food},
+      {label:'workout',done:!!day.workout},
+      {label:'weight',done:!!day.weight},
+      {label:'water',done:water>=goal,extra:water+'/'+goal}
+    ];
+    return {d:iso(today0()),items:items,done:items.filter(function(x){return x.done}).length};
+  }catch(e){return null}
+}
+function lockedInView(){
+  const local=lockedInLocal();
+  if(local){
+    /* remember what we saw so other devices can mirror it through sync */
+    const obs={d:local.d,items:local.items,done:local.done,at:Date.now()};
+    if(!S.lockedIn||JSON.stringify(S.lockedIn.items)!==JSON.stringify(obs.items)||S.lockedIn.d!==obs.d){
+      S.lockedIn=obs;save();
+    }
+    return local;
+  }
+  if(S.lockedIn&&S.lockedIn.d===iso(today0()))return S.lockedIn;
+  return null;
+}
+function lockedRow(li){
+  const row=h('div',{class:'li-row'});
+  li.items.forEach(function(it){
+    row.append(h('span',{class:'li-item'+(it.done?' on':''),title:'Tracked in Locked In 100'},
+      (it.done?'✓ ':'○ ')+it.label+(it.extra?' '+it.extra:'')));
+  });
+  return row;
+}
+
 function moodRow(){
   const t0=iso(today0());
   if(!S.moods)S.moods={};
@@ -624,6 +668,8 @@ function daySection(key,name,dateLbl,tasks,grouped,isToday){
   if(isToday){
     sec.append(h('div',{class:'mood-label'},'How I’m feeling'),moodRow());
     if(S.habits.length)sec.append(h('div',{class:'mood-label'},'Habits'),habitRow());
+    const li=lockedInView();
+    if(li)sec.append(h('div',{class:'mood-label'},'Locked In 100 · '+li.done+'/'+li.items.length),lockedRow(li));
   }
   if(grouped&&tasks.length){
     const groups=[['morning'],['afternoon'],['evening'],[null]];
@@ -1083,8 +1129,10 @@ function showDump(){
 /* ---------- Google Calendar ---------- */
 const GCALKEY='this-week-gcal';
 function gcal(){
-  try{return JSON.parse(localStorage.getItem(GCALKEY))||{clientId:'',accounts:[],lastSync:0}}
-  catch(e){return{clientId:'',accounts:[],lastSync:0}}
+  let g;
+  try{g=JSON.parse(localStorage.getItem(GCALKEY))||{}}catch(e){g={}}
+  g.clientId=g.clientId||'';g.accounts=g.accounts||[];g.lastSync=g.lastSync||0;
+  return g;
 }
 function saveGcal(g){try{localStorage.setItem(GCALKEY,JSON.stringify(g))}catch(e){}}
 
@@ -1219,7 +1267,7 @@ function cleanTags(a){
   return a.map(function(g){return String(g).toLowerCase().replace(/^#/,'').replace(/[^a-z0-9-]/g,'')})
     .filter(function(g){return g&&g!=='calendar'&&/[a-z0-9]/.test(g)}).slice(0,2);
 }
-function classifyEvents(evs){
+function classifyEvents(evs,known){
   const vocab={};
   S.tasks.forEach(function(t){(t.tags||[]).forEach(function(g){if(g!=='calendar')vocab[g]=1})});
   (S.recurring||[]).forEach(function(r){(r.tags||[]).forEach(function(g){if(g!=='calendar')vocab[g]=1})});
@@ -1228,8 +1276,13 @@ function classifyEvents(evs){
     return JSON.stringify({i:i,title:cleanText(e.title),date:e.date,time:e.time,
       allDay:!!e.allDay,calendar:cleanText(e.calendar)});
   }).join('\n');
-  const prompt='These are upcoming events from my calendar. For each one, decide whether it needs me to actively do or attend something (meetings, calls, classes, appointments, errands, deadlines, things to prepare) — or whether it is only informational (birthdays, holidays, other people’s time off, anniversaries, observances, FYI markers).\n\nReply with ONE JSON array and nothing else, like: [{"i":0,"task":true,"title":"…","tags":["coaching"]},{"i":1,"task":false,"title":"…","tags":[]}]\nOne object per event: "i" is the event index, "task" is whether it needs doing, "title" is a short cleaned-up task title with no date in it, "tags" is 0–2 short lowercase topic tags for the event.'
+  const knownPart=(known&&known.length)
+    ?('\nAlready on my task list (if an event below is the same real-world meeting as one of these, mark it "task":false):\n'
+      +known.map(function(k){return JSON.stringify(k)}).join('\n')+'\n')
+    :'';
+  const prompt='These are upcoming events from my calendar. For each one, decide whether it needs me to actively do or attend something (meetings, calls, classes, appointments, errands, deadlines, things to prepare) — or whether it is only informational (birthdays, holidays, other people’s time off, anniversaries, observances, FYI markers).\n\nAlso watch for duplicates: the same real-world meeting often appears on two calendars (a work copy and a personal copy, sometimes named slightly differently, at the same date and time). If an event below duplicates ANOTHER event below, keep the one with the clearest title and set "dup" to the kept event’s index on the duplicate.\n\nReply with ONE JSON array and nothing else, like: [{"i":0,"task":true,"title":"…","tags":["coaching"],"dup":null},{"i":1,"task":false,"title":"…","tags":[],"dup":0}]\nOne object per event: "i" is the event index, "task" is whether it needs doing, "title" is a short cleaned-up task title with no date in it, "tags" is 0–2 short lowercase topic tags, "dup" is the index of the event this one duplicates (else null).'
     +(vocabList.length?' Prefer my existing tags when one fits: '+vocabList.join(', ')+'. Only invent a new tag when the topic is clear (like coaching, workout, travel); otherwise use [].':' Only add a tag when the topic is clear (like coaching, workout, travel); otherwise use [].')
+    +knownPart
     +'\n\n'+list;
   return callClaude(prompt,8192)
     .catch(function(){return callClaude(prompt,8192)}) // one retry for transient network blips
@@ -1314,6 +1367,23 @@ function syncCalendar(manual){
     fresh.forEach(function(e){toClassify.push({e:e,kind:'new'})});
     renamed.forEach(function(r){toClassify.push({e:r.ev,kind:'rename',task:r.task})});
     retag.forEach(function(r){toClassify.push({e:r.ev,kind:'retag',task:r.task})});
+    /* existing same-slot calendar tasks: candidates for AI de-duplication */
+    const slotMap={};
+    S.tasks.forEach(function(t){
+      if(!t.eventKey||t.done||!t.date||!t.time)return;
+      const k=t.date+'|'+t.time;
+      (slotMap[k]=slotMap[k]||[]).push(t);
+    });
+    const dedupTasks=[];
+    Object.keys(slotMap).forEach(function(k){
+      if(slotMap[k].length>1)slotMap[k].forEach(function(t){dedupTasks.push(t)});
+    });
+    dedupTasks.forEach(function(t){
+      toClassify.push({e:{key:t.eventKey,title:t.calRawTitle||t.title,date:t.date,time:t.time,allDay:false,calendar:''},kind:'dedup',task:t});
+    });
+    const known=S.tasks.filter(function(t){
+      return t.eventKey&&t.date&&dedupTasks.indexOf(t)<0;
+    }).map(function(t){return {title:t.calTitle||t.title,date:t.date,time:t.time||null}});
 
     function finish(added){
       calSyncing=false;
@@ -1331,9 +1401,11 @@ function syncCalendar(manual){
 
     if(!toClassify.length){finish(0);return}
     stage='asking Claude about '+toClassify.length+' event'+(toClassify.length===1?'':'s');
-    return classifyEvents(toClassify.map(function(x){return x.e})).then(function(verdicts){
+    return classifyEvents(toClassify.map(function(x){return x.e}),known).then(function(verdicts){
       stage='applying changes';
       let added=0;
+      const dupTargets={};
+      verdicts.forEach(function(v){if(v&&v.dup!=null&&toClassify[v.dup])dupTargets[v.dup]=1});
       verdicts.forEach(function(v){
         const item=toClassify[v.i];
         if(!item)return;
@@ -1341,6 +1413,7 @@ function syncCalendar(manual){
         if(item.kind==='new'){
           if(S.calSeen[e.key])return;
           S.calSeen[e.key]={d:e.date};
+          if(v.dup!=null&&!dupTargets[v.i])return; // same meeting as another event — one task is enough
           if(v.task){
             const calTitle=v.title||e.title;
             S.tasks.push({id:'cal@'+e.key,title:calTitle,
@@ -1365,12 +1438,19 @@ function syncCalendar(manual){
             S.calSeen[e.key]={d:e.date};
             removed++;
           }
-        }else{ // retag — one-time tag backfill; never changes task-ness or title
+        }else if(item.kind==='retag'){ // one-time tag backfill; never changes task-ness or title
           const t=item.task;
           t.calTagged=1;
           const add=cleanTags(v.tags);
           add.forEach(function(g){if(t.tags.indexOf(g)<0)t.tags.push(g)});
           if(add.length)updated++;
+        }else{ // dedup — same-slot pair judged by AI
+          const t=item.task;
+          if(v.dup!=null&&!dupTargets[v.i]&&getTask(t.id)){
+            entomb(t.id);
+            S.tasks=S.tasks.filter(function(x){return x!==t});
+            removed++;
+          }
         }
       });
       finish(added);
@@ -1393,7 +1473,8 @@ let sb=null,sbUser=null,pushTimer=null,sbLoading=null;
 
 function syncPayload(){
   return {tasks:S.tasks,recurring:S.recurring,moods:S.moods,habits:S.habits,habitsU:S.habitsU||0,
-    habitLog:S.habitLog,archive:S.archive,calSeen:S.calSeen||{},deleted:S.deleted,logU:S.logU};
+    habitLog:S.habitLog,archive:S.archive,calSeen:S.calSeen||{},deleted:S.deleted,logU:S.logU,
+    lockedIn:S.lockedIn||null};
 }
 function mergeState(remote){ /* returns true if local S changed */
   if(!remote)return false;
@@ -1442,6 +1523,7 @@ function mergeState(remote){ /* returns true if local S changed */
   });
   if(!S.calSeen)S.calSeen={};
   Object.keys(remote.calSeen||{}).forEach(function(k){if(!S.calSeen[k])S.calSeen[k]=remote.calSeen[k]});
+  if(remote.lockedIn&&(remote.lockedIn.at||0)>((S.lockedIn&&S.lockedIn.at)||0))S.lockedIn=remote.lockedIn;
   return JSON.stringify(syncPayload())!==before;
 }
 
@@ -1709,7 +1791,7 @@ document.getElementById('dumpBtn').addEventListener('click',showDump);
 document.addEventListener('pointerdown',function(e){
   const a=document.activeElement;
   if(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA')
-    &&!(e.target.closest&&e.target.closest('input,textarea,select,form,.editor'))){
+    &&!(e.target.closest&&e.target.closest('input,textarea,select,form,.editor,.modal'))){
     a.blur();
   }
 },true);
