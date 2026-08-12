@@ -128,10 +128,10 @@
   .mood-row .m{font:inherit;font-size:12.5px;color:var(--muted);background:var(--bg);
     border:1px solid var(--line);border-radius:99px;padding:3px 11px;cursor:pointer}
   .mood-row .m.on{background:var(--accent-soft);border-color:var(--accent);color:var(--ink)}
-  .li-row{display:flex;flex-wrap:wrap;gap:4px 16px;padding-bottom:10px;
-    border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
-  .li-item{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
-  .li-item.on{color:var(--accent)}
+  .sync-alert{display:block;margin-top:12px;font:inherit;font-size:13px;color:var(--danger);
+    background:color-mix(in srgb,var(--danger) 10%,transparent);
+    border:1px solid color-mix(in srgb,var(--danger) 40%,transparent);
+    border-radius:9px;padding:7px 12px;cursor:pointer;text-align:left}
   .streak{color:var(--faint);font-size:11px;margin-left:5px}
 
   /* ---------- past view ---------- */
@@ -272,6 +272,7 @@
     </div>
     <div class="week-progress" id="wprog"></div>
     <div class="week-bar"><i id="wbar" style="width:0"></i></div>
+    <div id="syncAlert"></div>
   </header>
   <div class="views" id="views" role="tablist" aria-label="View"></div>
   <nav class="strip" id="strip" aria-label="Jump to day"></nav>
@@ -497,6 +498,7 @@ function render(){
   const done=S.tasks.filter(t=>t.done).length,total=S.tasks.length;
   document.getElementById('wprog').textContent=total?done+' of '+total+' done':'';
   document.getElementById('wbar').style.width=total?Math.round(done/total*100)+'%':'0';
+  renderSyncAlert();
   renderViews();
   renderStrip();
   app.textContent='';
@@ -518,6 +520,17 @@ function render(){
   renderFoot();
   if(!S.tasks.length&&S.view==='days'){
     app.prepend(h('p',{class:'empty-week'},'A quiet week so far. Tap + Add under a day — #word becomes a tag.'));
+  }
+}
+
+function renderSyncAlert(){
+  const el=document.getElementById('syncAlert');
+  el.textContent='';
+  const g=gcal();
+  const needs=g.accounts.some(function(a){return a.needsReauth});
+  if(g.accounts.length&&(g.lastError||needs)&&!calSyncing){
+    el.append(h('button',{class:'sync-alert',onclick:function(){syncCalendar(true)}},
+      '⚠ Calendar sync issue — tap to retry'));
   }
 }
 
@@ -600,45 +613,6 @@ function habitRow(){
   });
   return row;
 }
-function lockedInLocal(){
-  try{
-    const raw=localStorage.getItem('lockedin100');
-    if(!raw)return null;
-    const li=JSON.parse(raw);
-    const day=(li.days||{})[iso(today0())]||{};
-    const goal=li.waterGoal||16;
-    const water=day.water||0;
-    const items=[
-      {label:'food',done:!!day.food},
-      {label:'workout',done:!!day.workout},
-      {label:'weight',done:!!day.weight},
-      {label:'water',done:water>=goal,extra:water+'/'+goal}
-    ];
-    return {d:iso(today0()),items:items,done:items.filter(function(x){return x.done}).length};
-  }catch(e){return null}
-}
-function lockedInView(){
-  const local=lockedInLocal();
-  if(local){
-    /* remember what we saw so other devices can mirror it through sync */
-    const obs={d:local.d,items:local.items,done:local.done,at:Date.now()};
-    if(!S.lockedIn||JSON.stringify(S.lockedIn.items)!==JSON.stringify(obs.items)||S.lockedIn.d!==obs.d){
-      S.lockedIn=obs;save();
-    }
-    return local;
-  }
-  if(S.lockedIn&&S.lockedIn.d===iso(today0()))return S.lockedIn;
-  return null;
-}
-function lockedRow(li){
-  const row=h('div',{class:'li-row'});
-  li.items.forEach(function(it){
-    row.append(h('span',{class:'li-item'+(it.done?' on':''),title:'Tracked in Locked In 100'},
-      (it.done?'✓ ':'○ ')+it.label+(it.extra?' '+it.extra:'')));
-  });
-  return row;
-}
-
 function moodRow(){
   const t0=iso(today0());
   if(!S.moods)S.moods={};
@@ -668,8 +642,6 @@ function daySection(key,name,dateLbl,tasks,grouped,isToday){
   if(isToday){
     sec.append(h('div',{class:'mood-label'},'How I’m feeling'),moodRow());
     if(S.habits.length)sec.append(h('div',{class:'mood-label'},'Habits'),habitRow());
-    const li=lockedInView();
-    if(li)sec.append(h('div',{class:'mood-label'},'Locked In 100 · '+li.done+'/'+li.items.length),lockedRow(li));
   }
   if(grouped&&tasks.length){
     const groups=[['morning'],['afternoon'],['evening'],[null]];
@@ -1473,8 +1445,7 @@ let sb=null,sbUser=null,pushTimer=null,sbLoading=null;
 
 function syncPayload(){
   return {tasks:S.tasks,recurring:S.recurring,moods:S.moods,habits:S.habits,habitsU:S.habitsU||0,
-    habitLog:S.habitLog,archive:S.archive,calSeen:S.calSeen||{},deleted:S.deleted,logU:S.logU,
-    lockedIn:S.lockedIn||null};
+    habitLog:S.habitLog,archive:S.archive,calSeen:S.calSeen||{},deleted:S.deleted,logU:S.logU};
 }
 function mergeState(remote){ /* returns true if local S changed */
   if(!remote)return false;
@@ -1523,7 +1494,6 @@ function mergeState(remote){ /* returns true if local S changed */
   });
   if(!S.calSeen)S.calSeen={};
   Object.keys(remote.calSeen||{}).forEach(function(k){if(!S.calSeen[k])S.calSeen[k]=remote.calSeen[k]});
-  if(remote.lockedIn&&(remote.lockedIn.at||0)>((S.lockedIn&&S.lockedIn.at)||0))S.lockedIn=remote.lockedIn;
   return JSON.stringify(syncPayload())!==before;
 }
 
